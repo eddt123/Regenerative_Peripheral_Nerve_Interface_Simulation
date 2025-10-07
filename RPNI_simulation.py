@@ -30,7 +30,8 @@ def get_client_and_model():
     global _client, _model
     if _client is None:
         _client = mph.start()
-        _model  = _client.load(r"C:\Users\eddyt\Documents\COMSOL\RPNI sim\12-ch 3D RPNI sim.mph") 
+        model_path = Path(__file__).resolve().parent / "12-ch 3D RPNI sim.mph"
+        _model  = _client.load(str(model_path))
         _model.build()                   # mesh ONCE
     return _client, _model
 
