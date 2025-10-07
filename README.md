@@ -13,12 +13,6 @@ This repository hosts tooling to evaluate optimisation strategies for a COMSOL-b
 Install dependencies into your environment:
 
 ```bash
-pip install -r requirements.txt
-```
-
-If a `requirements.txt` is not provided, ensure at minimum that `numpy`, `scipy`, `pandas`, and `mph` are installed:
-
-```bash
 pip install numpy scipy pandas mph
 ```
 
@@ -70,4 +64,4 @@ You can post-process these results with your preferred analysis tooling (Python,
 
 ## Citation
 
-If you use this simulation suite in academic work, please cite the associated publications or acknowledge the tooling accordingly.
+If you use this simulation suite in academic work, please cite the associated publications or acknowledge me edward.turner17@imperial.ac.uk
