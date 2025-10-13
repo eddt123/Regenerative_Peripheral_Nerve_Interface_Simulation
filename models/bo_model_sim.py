@@ -9,6 +9,7 @@ from typing import Callable, Dict, Tuple
 class BOSimulation:
     """
     Bayesian Optimization for RPNI electrode current selection to maximise selectivity.
+    Uses Lower Confidence Bound (LCB) acquisition with parameter κ.
     """
     def __init__(
         self,
@@ -19,9 +20,9 @@ class BOSimulation:
         n_iters: int = 50,
         candidates_per_iter: int = 20,
         n_initial_points: int = 10,
-        acq_func: str = "EI",
+        acq_func: str = "LCB",          # changed default
         random_state: int = 42,
-        xi: float = 0.01,
+        kappa: float = 1.96,            # controls exploration (higher = more exploratory)
     ):
         # Store inputs
         self.simulate_fn = simulate_fn
@@ -31,19 +32,20 @@ class BOSimulation:
         self.out_csv = Path(out_csv)
         self.n_initial = n_initial_points
         self.n_iters = n_iters
-        # BO-specific param, candidates_per_iter unused but kept for API compatibility
-        self.candidates_per_iter = candidates_per_iter
+        self.candidates_per_iter = candidates_per_iter  # unused, kept for compatibility
 
         # Prepare search space
-        self.space = [Real(lb, ub, name=name)
-                      for name, (lb, ub) in current_ranges.items()]
+        self.space = [
+            Real(lb, ub, name=name)
+            for name, (lb, ub) in current_ranges.items()
+        ]
 
-        # Initialize optimizer
+        # Initialize optimizer using LCB acquisition
         self.optimizer = Optimizer(
             dimensions=self.space,
             base_estimator="GP",
-            acq_func=acq_func,
-            acq_func_kwargs={"xi": xi},
+            acq_func=acq_func,                 # now "LCB"
+            acq_func_kwargs={"kappa": kappa},  # use κ instead of ξ
             random_state=random_state,
             n_initial_points=self.n_initial
         )

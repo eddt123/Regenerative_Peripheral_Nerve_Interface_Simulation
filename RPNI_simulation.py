@@ -84,10 +84,10 @@ def main():
     gr_iters      = [5, 10, 20, 40]    # number of random iterations
     gr_candidates = [40, 20, 10, 5]    # samples per iteration (gr_iters * gr_candidates ≈ 200)
 
-    # 2) BO (GP) hyperparams
-    bo_iters      = [180, 190, 200]    # total BO iterations (bo_initial + bo_iters ≈ 200)
-    bo_initial    = [10, 20, 40]       # initial random points
-    xi_values     = [0.001, 0.01, 0.1]  # exploration vs exploitation
+    # 2) BO (GP-LCB) hyperparameters
+    bo_initial    = [10, 20, 40]        # number of random initial samples before GP fitting
+    kappa_values  = [0.5, 1.5, 2.5]     # LCB exploration parameter (lower = exploit, higher = explore)
+
 
     # 3) CMA-ES hyperparams
     sigma_values     = [0.4, 0.8, 1.2]  # initial search radius
@@ -141,23 +141,24 @@ def main():
 
     for tidx in target_indices:
 
-        #GP-BO
+        # GP-BO
         for bo_initial in bo_initial:
-            for xi in xi_values:
-                bo_csv = out_dir / f"bo_i{bo_initial}_xi{xi}_t{tidx}.csv"
+            for kappa in kappa_values:
+                bo_csv = out_dir / f"bo_i{bo_initial}_kappa{kappa}_t{tidx}.csv"
                 bo_opt = BOSimulation(
                     current_ranges     = current_ranges,
                     target_idx         = tidx,
                     simulate_fn        = simulate_selectivity,
                     out_csv            = bo_csv,
-                    n_iters            = 200 - bo_initial,   # to keep total ~200
+                    n_iters            = 200 - bo_initial,   # keep total ~200
                     candidates_per_iter= gr_candidates,
                     n_initial_points   = bo_initial,
-                    acq_func           = "EI",
+                    acq_func           = "LCB",              # changed from EI → LCB
                     random_state       = 42,
-                    xi                 = xi,
+                    kappa              = kappa,              # use κ instead of ξ
                 )
                 bo_opt.optimize()
+
 
 
         # CMA-ES
