@@ -74,7 +74,7 @@ def simulate_selectivity(param_dict, target_idx):
 
 # ─── Main Script ─────────────────────────────────────────────────────
 def main():
-    out_dir = Path("data") / "RPNI_sim_PSO"
+    out_dir = Path("data") / "RPNI_sim"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     current_ranges = {f"I_d{i}": (-1.0, 1.0) for i in range(1, 13)}
