@@ -1,0 +1,503 @@
+{
+  "summary": {
+    "RandomSearch": {
+      "mean_score": 0.997452226330608,
+      "std_score": 0.0005813117091596742,
+      "best_score": 0.9983662017161805,
+      "median_score": 0.9972804412670282,
+      "mean_evals": 1500,
+      "mean_first_hit": NaN,
+      "hit_rate": 0.0
+    },
+    "HillClimb": {
+      "mean_score": 0.9971043783557034,
+      "std_score": 0.00040616668776578927,
+      "best_score": 0.997828891001294,
+      "median_score": 0.9970654906819922,
+      "mean_evals": 1501,
+      "mean_first_hit": NaN,
+      "hit_rate": 0.0
+    },
+    "ParticleSwarm": {
+      "mean_score": 0.9998903839478921,
+      "std_score": 0.00017446801912236328,
+      "best_score": 0.9999890626908998,
+      "median_score": 0.9999578767465285,
+      "mean_evals": 2366,
+      "mean_first_hit": 270.27272727272725,
+      "hit_rate": 0.9166666666666666
+    },
+    "DifferentialEvolution": {
+      "mean_score": 0.9999273086682934,
+      "std_score": 1.780015315464799e-05,
+      "best_score": 0.9999532887345925,
+      "median_score": 0.9999259467955088,
+      "mean_evals": 2912,
+      "mean_first_hit": 1526.6666666666667,
+      "hit_rate": 1.0
+    },
+    "CoordinateDescent": {
+      "mean_score": 0.9997323421746243,
+      "std_score": 5.7635041381826296e-05,
+      "best_score": 0.9998684049066976,
+      "median_score": 0.999713867332336,
+      "mean_evals": 2127.0833333333335,
+      "mean_first_hit": 624.75,
+      "hit_rate": 1.0
+    },
+    "CMAES": {
+      "mean_score": 0.9999978064935229,
+      "std_score": 4.674948238612551e-07,
+      "best_score": 0.9999988926794252,
+      "median_score": 0.999997643944128,
+      "mean_evals": 1920,
+      "mean_first_hit": 569.5,
+      "hit_rate": 1.0
+    },
+    "BayesianOpt": {
+      "mean_score": 0.9973089421235626,
+      "std_score": 0.000624916339835071,
+      "best_score": 0.9982121360057349,
+      "median_score": 0.9972286627871911,
+      "mean_evals": 138,
+      "mean_first_hit": NaN,
+      "hit_rate": 0.0
+    }
+  },
+  "replicates": {
+    "RandomSearch": [
+      {
+        "best_score": 0.996802852777565,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9972355437873426,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9976679015447982,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9970584156883185,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9979758283762726,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9983662017161805,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9982406714662901,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9963864104203551,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9971010486289265,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9972953201102821,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9972655624237744,
+        "evaluations": 1500,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9980309590271911,
+        "evaluations": 1500,
+        "first_hit": null
+      }
+    ],
+    "HillClimb": [
+      {
+        "best_score": 0.9968718924718682,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9970599274401049,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9971709854421293,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9966466933168797,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9967153550424688,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9964987648431476,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9970710539238797,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.997828891001294,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9974691000378226,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9975513403013503,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.997584281502089,
+        "evaluations": 1501,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.996784254945407,
+        "evaluations": 1501,
+        "first_hit": null
+      }
+    ],
+    "ParticleSwarm": [
+      {
+        "best_score": 0.9999890626908998,
+        "evaluations": 2366,
+        "first_hit": 115
+      },
+      {
+        "best_score": 0.999978636665175,
+        "evaluations": 2366,
+        "first_hit": 234
+      },
+      {
+        "best_score": 0.9999506625448927,
+        "evaluations": 2366,
+        "first_hit": 475
+      },
+      {
+        "best_score": 0.999916535584719,
+        "evaluations": 2366,
+        "first_hit": 372
+      },
+      {
+        "best_score": 0.999986117881391,
+        "evaluations": 2366,
+        "first_hit": 286
+      },
+      {
+        "best_score": 0.9999650909481643,
+        "evaluations": 2366,
+        "first_hit": 299
+      },
+      {
+        "best_score": 0.9999847026905082,
+        "evaluations": 2366,
+        "first_hit": 122
+      },
+      {
+        "best_score": 0.9998154859437668,
+        "evaluations": 2366,
+        "first_hit": 383
+      },
+      {
+        "best_score": 0.9993409911995407,
+        "evaluations": 2366,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9998448834773801,
+        "evaluations": 2366,
+        "first_hit": 334
+      },
+      {
+        "best_score": 0.9999845261579612,
+        "evaluations": 2366,
+        "first_hit": 150
+      },
+      {
+        "best_score": 0.9999279115903063,
+        "evaluations": 2366,
+        "first_hit": 203
+      }
+    ],
+    "DifferentialEvolution": [
+      {
+        "best_score": 0.9999491924100816,
+        "evaluations": 2912,
+        "first_hit": 1515
+      },
+      {
+        "best_score": 0.9999086853567918,
+        "evaluations": 2912,
+        "first_hit": 1815
+      },
+      {
+        "best_score": 0.9999020891829471,
+        "evaluations": 2912,
+        "first_hit": 1690
+      },
+      {
+        "best_score": 0.9999248647199528,
+        "evaluations": 2912,
+        "first_hit": 1674
+      },
+      {
+        "best_score": 0.9999418848563404,
+        "evaluations": 2912,
+        "first_hit": 1082
+      },
+      {
+        "best_score": 0.9999192573154724,
+        "evaluations": 2912,
+        "first_hit": 1619
+      },
+      {
+        "best_score": 0.9999291898851894,
+        "evaluations": 2912,
+        "first_hit": 1588
+      },
+      {
+        "best_score": 0.999927028871065,
+        "evaluations": 2912,
+        "first_hit": 1202
+      },
+      {
+        "best_score": 0.9999036369061938,
+        "evaluations": 2912,
+        "first_hit": 1460
+      },
+      {
+        "best_score": 0.9999153107603025,
+        "evaluations": 2912,
+        "first_hit": 1509
+      },
+      {
+        "best_score": 0.9999532750205918,
+        "evaluations": 2912,
+        "first_hit": 1646
+      },
+      {
+        "best_score": 0.9999532887345925,
+        "evaluations": 2912,
+        "first_hit": 1520
+      }
+    ],
+    "CoordinateDescent": [
+      {
+        "best_score": 0.999799271320151,
+        "evaluations": 3747,
+        "first_hit": 1982
+      },
+      {
+        "best_score": 0.999700271824896,
+        "evaluations": 327,
+        "first_hit": 94
+      },
+      {
+        "best_score": 0.9997397079365105,
+        "evaluations": 3207,
+        "first_hit": 106
+      },
+      {
+        "best_score": 0.999692315474573,
+        "evaluations": 1047,
+        "first_hit": 106
+      },
+      {
+        "best_score": 0.9997862835630162,
+        "evaluations": 4611,
+        "first_hit": 2221
+      },
+      {
+        "best_score": 0.9997503684713183,
+        "evaluations": 2775,
+        "first_hit": 1039
+      },
+      {
+        "best_score": 0.999727462839776,
+        "evaluations": 327,
+        "first_hit": 73
+      },
+      {
+        "best_score": 0.9996849701730723,
+        "evaluations": 327,
+        "first_hit": 91
+      },
+      {
+        "best_score": 0.9996641833327523,
+        "evaluations": 903,
+        "first_hit": 668
+      },
+      {
+        "best_score": 0.9998684049066976,
+        "evaluations": 795,
+        "first_hit": 106
+      },
+      {
+        "best_score": 0.9996863626793695,
+        "evaluations": 2415,
+        "first_hit": 127
+      },
+      {
+        "best_score": 0.9996885035733577,
+        "evaluations": 5044,
+        "first_hit": 884
+      }
+    ],
+    "CMAES": [
+      {
+        "best_score": 0.9999974866295789,
+        "evaluations": 1920,
+        "first_hit": 572
+      },
+      {
+        "best_score": 0.9999972214993638,
+        "evaluations": 1920,
+        "first_hit": 491
+      },
+      {
+        "best_score": 0.9999980712015951,
+        "evaluations": 1920,
+        "first_hit": 556
+      },
+      {
+        "best_score": 0.9999988926794252,
+        "evaluations": 1920,
+        "first_hit": 629
+      },
+      {
+        "best_score": 0.9999976666962515,
+        "evaluations": 1920,
+        "first_hit": 555
+      },
+      {
+        "best_score": 0.9999980381615553,
+        "evaluations": 1920,
+        "first_hit": 565
+      },
+      {
+        "best_score": 0.9999976211920046,
+        "evaluations": 1920,
+        "first_hit": 586
+      },
+      {
+        "best_score": 0.9999977273196227,
+        "evaluations": 1920,
+        "first_hit": 574
+      },
+      {
+        "best_score": 0.9999985010849849,
+        "evaluations": 1920,
+        "first_hit": 342
+      },
+      {
+        "best_score": 0.9999975864120858,
+        "evaluations": 1920,
+        "first_hit": 657
+      },
+      {
+        "best_score": 0.9999973889572229,
+        "evaluations": 1920,
+        "first_hit": 684
+      },
+      {
+        "best_score": 0.9999974760885836,
+        "evaluations": 1920,
+        "first_hit": 623
+      }
+    ],
+    "BayesianOpt": [
+      {
+        "best_score": 0.9968810772001039,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9961966407224973,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9981888241933299,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9968123441243482,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9973305400960633,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.996680514185972,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9973730845228781,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9982121360057349,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9971267854783189,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9976921228873111,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9970266747876994,
+        "evaluations": 138,
+        "first_hit": null
+      },
+      {
+        "best_score": 0.9981865612784936,
+        "evaluations": 138,
+        "first_hit": null
+      }
+    ]
+  }
+}
