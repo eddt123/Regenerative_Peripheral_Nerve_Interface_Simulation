@@ -1,0 +1,9 @@
+data/
+results/
+api_key.txt
+*.log
+*.raw
+timing/
+data/
+envs/
+outputs/

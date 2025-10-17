@@ -1,332 +1,264 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Analytic Cylinder Optimization Simulation
------------------------------------------
-Drop-in replacement for the COMSOL-based script.
-Computes potential and activation analytically inside a
-homogeneous cylindrical volume conductor with 12 electrodes
-(3 rows × 4 columns). Uses same optimizer set and parameters.
+Comprehensive CMA-ES vs Bayesian Optimisation Benchmark (Full-space only)
+=========================================================================
+Runs both optimisers (CMA-ES, BO) on your RPNI selectivity simulation
+in the full 12-electrode space. Logs currents, target points, and performance.
 """
 
-from pathlib import Path
-import numpy as np
+import os, time, numpy as np, pandas as pd, matplotlib.pyplot as plt
+from tqdm import tqdm
+from itertools import product
+from cma import CMAEvolutionStrategy
+from skopt import Optimizer as SkOptimizer
+from utils.run_selectivity_simulation import run_selectivity_simulation
 
-# Import optimizers (same as your repo)
-from models.greedy_random_sim import GreedyRandomOptimizer
-from models.bo_model_sim import BOSimulation
-from models.cmaes_sim import CMAESOptimizer
-from models.gradient_descent_sim import GradientDescentSimulator
-from models.de_sim import DESimulation
-from models.additional_optimisers_sim import (
-    TPESimulation,
-    RandomForestBOSimulation,
-    CEMOptimizer,
-    PowellLocalOptimizer,
-    BanditOptimizer,
-    PSOSimulation,
-)
+# ==============================================================
+# CONFIGURATION
+# ==============================================================
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "optimizer_comparison_full")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ---------------------------------------------------------------------
-# Analytical simulator replacing COMSOL
-# ---------------------------------------------------------------------
+N_ELECTRODES = 12
+RANGE = 1e-3
+N_ITER = 100
+REPEATS = 10
 
-R = 1.5e-3          # cylinder radius [m]
-SIGMA = 0.3         # conductivity [S/m]
-Z_SPACING = 1.0e-3  # distance between electrode rings
-H_AF = 0.25e-3      # step for activation fn [m]
-ALPHA = 8.0
-BETA = 0.5
+# --- CMA-ES hyperparameters ---
+SIGMAS = [0.3e-3, 0.5e-3, 0.8e-3]
+POPSIZES = [8, 12, 16]
 
-# Generate 3 rows × 4 electrodes
-def electrode_positions(n_rows=3, n_per_row=4, radius=R, dz=Z_SPACING):
-    thetas = np.linspace(0, 2*np.pi, n_per_row, endpoint=False)
-    zs = np.linspace(-(n_rows-1)/2*dz, (n_rows-1)/2*dz, n_rows)
-    pos = []
-    for z in zs:
-        for theta in thetas:
-            x = radius * np.cos(theta)
-            y = radius * np.sin(theta)
-            pos.append([x, y, z])
-    return np.array(pos)
+# --- BO hyperparameters ---
+ACQ_FUNCS = ["EI", "LCB", "PI"]
+KAPPAS = [0.1, 0.5, 1.0, 2.0, 3.0]
+XIS = [0.001, 0.005, 0.01, 0.05]
+N_INIT_POINTS = [5, 10]
 
-ELEC_POS = electrode_positions(3, 4)
-FOUR_PI_SIG = 4*np.pi*SIGMA
+# Simulation geometry
+radius, height, sigma = 0.01, 0.04, 0.25
 
+# ==============================================================
+# FIXED TARGET POINTS
+# ==============================================================
+TARGET_POINTS = [
+    (0.0020, -0.00346, -0.0200)
+]
+#z_levels = np.linspace(-height/3, height/3, 3)
+#r_levels = [0.0, 0.004, 0.0075]
+#angles = np.linspace(0, 2*np.pi, 4, endpoint=False)
+#for z in z_levels:
+#    for r in r_levels:
+#        for th in angles[:2]:
+#            TARGET_POINTS.append((r*np.cos(th), r*np.sin(th), z))
+#print(f"[Setup] Using {len(TARGET_POINTS)} fixed target points.")
 
-def potential_at(r, currents):
-    r = np.atleast_2d(r)
-    dif = r[:, None, :] - ELEC_POS[None, :, :]
-    dist = np.linalg.norm(dif, axis=-1) + 1e-12
-    v = (currents[None, :] / (FOUR_PI_SIG * dist)).sum(axis=1)
-    return v
+# ==============================================================
+# OBJECTIVE FUNCTION
+# ==============================================================
+def eval_selectivity(currents, target_point):
+    currents = np.asarray(currents)
+    currents -= np.mean(currents)
+    res = run_selectivity_simulation(
+        n_rows=4, n_per_row=3,
+        currents=currents,
+        target_point=target_point,
+        radius=radius, height=height, sigma=sigma,
+        n_off_samples=1200, metric="activation",
+        grounded_boundary=True, R_outer=0.10,
+    )
+    return -float(res["selectivity"])  # minimiser
 
+# ==============================================================
+# PLOTTER
+# ==============================================================
+# ==============================================================
+# PLOTTER (with target point annotation)
+# ==============================================================
+def save_live_plot(iters, vals, bests, tag, target_point):
+    plt.figure(figsize=(6, 4))
+    plt.plot(iters, vals, 'o-', color='gray', lw=1.5, label='Iteration Selectivity')
+    plt.plot(iters, bests, '-', color='blue', lw=2.0, label='Best-so-far')
+    plt.xlabel("Iteration")
+    plt.ylabel("Selectivity")
 
-def activation_function(r, u, currents, h=H_AF):
-    u = np.asarray(u, float)
-    u /= np.linalg.norm(u) + 1e-12
-    v_plus = potential_at(r + h*u, currents)
-    v0 = potential_at(r, currents)
-    v_minus = potential_at(r - h*u, currents)
-    return (v_plus - 2*v0 + v_minus) / (h**2)
+    # Annotate which target point is being optimised
+    tx, ty, tz = target_point
+    title_str = (
+        f"{tag}\n"
+        f"Target point: x={tx*1e3:.2f} mm, y={ty*1e3:.2f} mm, z={tz*1e3:.2f} mm"
+    )
 
+    plt.title(title_str, fontsize=10)
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
 
-def sigmoid(x):
-    return 1.0 / (1.0 + np.exp(-x))
+    fname = f"{tag}_x{tx*1e3:.1f}_y{ty*1e3:.1f}_z{tz*1e3:.1f}_progress.png"
+    plt.savefig(os.path.join(OUTPUT_DIR, fname), dpi=200)
+    plt.close()
 
+# ==============================================================
+# CMA-ES FULL
+# ==============================================================
+def run_cma_experiment(sigma0, popsize, repeat, target_point):
+    tag = f"CMAES_s{sigma0:.1e}_p{popsize}_r{repeat}"
+    csv_path = os.path.join(OUTPUT_DIR, f"{tag}_progress.csv")
+    header_written = False
+    x0 = np.random.uniform(-RANGE, RANGE, N_ELECTRODES)
+    x0 -= np.mean(x0)
+    es = CMAEvolutionStrategy(x0, sigma0, {"popsize": popsize, "verb_disp": 0})
+    best_so_far, best_iter = -np.inf, 0
+    iter_vals, best_vals = [], []
 
-# Define fibers
-def make_fiber_points():
-    rs = [0.5*R, 0.6*R, 0.6*R, 0.9*R, 0.3*R]
-    thetas = [0, np.pi/2, np.pi, np.pi/4, 3*np.pi/4]
-    zs = [0.0, 0.0, 0.0, 0.0, 0.0]
-    pts = np.c_[np.array(rs)*np.cos(thetas),
-                np.array(rs)*np.sin(thetas),
-                np.array(zs)]
-    u = np.array([0, 0, 1])  # fiber direction along z
-    idx_map = {20000+i: pts[i] for i in range(len(pts))}
-    target_idx = 20000
-    off_indices = [k for k in idx_map.keys() if k != target_idx]
-    return idx_map, target_idx, off_indices, u
+    for it in tqdm(range(N_ITER), desc=tag, leave=False):
+        X = [np.clip(x, -RANGE, RANGE) for x in es.ask()]
+        Y = [eval_selectivity(x, target_point) for x in X]
+        es.tell(X, Y)
+        iter_best = -np.min(Y)
+        iter_best_idx = int(np.argmin(Y))
+        iter_best_currents = X[iter_best_idx]
 
+        iter_vals.append(iter_best)
+        if iter_best > best_so_far:
+            best_so_far, best_iter = iter_best, it + 1
+        best_vals.append(best_so_far)
 
-FIBER_IDX_MAP, DEFAULT_TARGET_IDX, DEFAULT_OFF_IDXS, FIBER_DIR = make_fiber_points()
-
-
-def selectivity_reward(currents, target_idx, off_indices=DEFAULT_OFF_IDXS, alpha=ALPHA, beta=BETA):
-    r_t = FIBER_IDX_MAP[target_idx]
-    AF_t = activation_function(r_t, FIBER_DIR, currents)
-    AF_off = [activation_function(FIBER_IDX_MAP[k], FIBER_DIR, currents) for k in off_indices]
-    AF_off = np.array(AF_off)
-    return sigmoid(alpha*AF_t) - beta*np.mean(sigmoid(alpha*AF_off))
-
-
-# Drop-in simulate_selectivity (for all optimizers)
-def simulate_selectivity(param_dict, target_idx):
-    names = [f"I_d{i}" for i in range(1, 13)]
-    currents = np.array([float(param_dict.get(n, 0.0)) for n in names])
-    return float(selectivity_reward(currents, target_idx))
-
-
-# ---------------------------------------------------------------------
-# Main optimization runs
-# ---------------------------------------------------------------------
-def main():
-    out_dir = Path("data") / "RPNI_sim_analytic"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    current_ranges = {f"I_d{i}": (-1.0, 1.0) for i in range(1, 13)}
-    target_indices = [DEFAULT_TARGET_IDX]
-
-    # ---------------- Parameter grids (identical to your COMSOL script)
-    gr_iters = [5, 10, 20, 40]
-    gr_candidates = [40, 20, 10, 5]
-
-    bo_initial = [10, 20, 40]
-    kappa_values = [0.5, 1.5, 2.5]
-
-    sigma_values = [0.4, 0.8, 1.2]
-    popsize_values = [5, 10, 20]
-    cma_iters_values = [40, 20, 10]
-
-    de_popsize_vals = [5, 10, 20]
-    de_mutation_vals = [(0.3, 0.9), (0.5, 1.0)]
-    de_rec_vals = [0.5, 0.7, 0.9]
-    de_maxiter_vals = [10, 20, 40]
-
-    gd_iters = [200]
-    lr_values = [0.01, 0.1, 0.5]
-    eps_values = [1e-1, 1e-2, 1e-3]
-
-    tpe_trials_vals = [200]
-    rf_calls_vals = [200]
-
-    cem_popsize_vals = [20, 50, 100]
-    cem_elite_frac_vals = [0.1, 0.2, 0.3]
-    cem_iters_vals = [4, 10, 20]
-    cem_smooth_vals = [0.7, 0.9]
-
-    powell_restarts_vals = [5, 10, 20]
-
-    bandit_res_vals = [3, 5, 7]
-    bandit_pulls_vals = [200]
-    bandit_c_vals = [0.5, 1.0, 2.0]
-
-    pso_popsize_vals = [20]
-    pso_w_vals = [0.5]
-    pso_c1_vals = [1.5]
-    pso_c2_vals = [1.5]
-    pso_iters_vals = [10]
-
-    # ---------------------------------------------------------------
-    for tidx in target_indices:
-        # --- BO (LCB)
-        # for bo_init in bo_initial:
-        #     for kappa in kappa_values:
-        #         bo_csv = out_dir / f"bo_i{bo_init}_kappa{kappa}_t{tidx}.csv"
-        #         bo_opt = BOSimulation(
-        #             current_ranges=current_ranges,
-        #             target_idx=tidx,
-        #             simulate_fn=simulate_selectivity,
-        #             out_csv=bo_csv,
-        #             n_iters=200 - bo_init,
-        #             candidates_per_iter=gr_candidates,
-        #             n_initial_points=bo_init,
-        #             acq_func="LCB",
-        #             random_state=42,
-        #             kappa=kappa,
-        #         )
-        #         bo_opt.optimize()
-
-        # --- CMA-ES
-        for sigma in sigma_values:
-            for popsize in popsize_values:
-                for cma_iters in cma_iters_values:
-                    cma_csv = out_dir / f"cmaes_t{tidx}_sig{sigma}_pop{popsize}_gen{cma_iters}.csv"
-                    cma_opt = CMAESOptimizer(
-                        current_ranges=current_ranges,
-                        target_idx=tidx,
-                        simulate_fn=simulate_selectivity,
-                        out_csv=cma_csv,
-                        sigma=sigma,
-                        popsize=popsize,
-                        n_iters=cma_iters,
-                    )
-                    cma_opt.optimize()
-
-        # --- DE
-        for pop in de_popsize_vals:
-            for mut in de_mutation_vals:
-                for rec in de_rec_vals:
-                    for gens in de_maxiter_vals:
-                        de_csv = out_dir / (
-                            f"de_t{tidx}_pop{pop}_mut{mut[0]}-{mut[1]}"
-                            f"_rec{rec}_gen{gens}.csv"
-                        )
-                        de_opt = DESimulation(
-                            current_ranges=current_ranges,
-                            target_idx=tidx,
-                            simulate_fn=simulate_selectivity,
-                            out_csv=de_csv,
-                            popsize=pop,
-                            mutation=mut,
-                            recombination=rec,
-                            maxiter=gens,
-                        )
-                        de_opt.optimize()
-
-        # --- Gradient Descent
-        for lr in lr_values:
-            for eps in eps_values:
-                gd_csv = out_dir / f"gd_t{tidx}_lr_{lr}_eps_{eps}.csv"
-                gd_opt = GradientDescentSimulator(
-                    current_ranges=current_ranges,
-                    target_idx=tidx,
-                    simulate_fn=simulate_selectivity,
-                    out_csv=gd_csv,
-                    learning_rate=lr,
-                    n_iters=gd_iters,
-                    eps=eps,
-                )
-                gd_opt.optimize()
-
-        # --- TPE
-        for trials in tpe_trials_vals:
-            tpe_csv = out_dir / f"tpe_{trials}_target_{tidx}.csv"
-            tpe_opt = TPESimulation(
-                current_ranges=current_ranges,
-                target_idx=tidx,
-                simulate_fn=simulate_selectivity,
-                out_csv=tpe_csv,
-                n_trials=trials,
-                random_seed=42,
-            )
-            tpe_opt.optimize()
-
-        # --- RF-BO
-        for calls in rf_calls_vals:
-            rf_csv = out_dir / f"rfbo_{calls}_target_{tidx}.csv"
-            rf_opt = RandomForestBOSimulation(
-                current_ranges=current_ranges,
-                target_idx=tidx,
-                simulate_fn=simulate_selectivity,
-                out_csv=rf_csv,
-                n_calls=calls,
-                random_seed=42,
-            )
-            rf_opt.optimize()
-
-        # --- CEM
-        for pop in cem_popsize_vals:
-            for elite in cem_elite_frac_vals:
-                for iters in cem_iters_vals:
-                    for smooth in cem_smooth_vals:
-                        cem_csv = out_dir / f"cem_pop{pop}_elite{elite}_it{iters}_s{smooth}_t{tidx}.csv"
-                        cem_opt = CEMOptimizer(
-                            current_ranges=current_ranges,
-                            target_idx=tidx,
-                            simulate_fn=simulate_selectivity,
-                            out_csv=cem_csv,
-                            popsize=pop,
-                            elite_frac=elite,
-                            n_iters=iters,
-                            smoothing=smooth,
-                            random_seed=42,
-                        )
-                        cem_opt.optimize()
-
-        # --- Powell
-        for rest in powell_restarts_vals:
-            pow_csv = out_dir / f"powell_{rest}restarts_t{tidx}.csv"
-            pow_opt = PowellLocalOptimizer(
-                current_ranges=current_ranges,
-                target_idx=tidx,
-                simulate_fn=simulate_selectivity,
-                out_csv=pow_csv,
-                n_restarts=rest,
-                random_seed=42,
-            )
-            pow_opt.optimize()
-
-        # --- Bandit (UCB)
-        for res in bandit_res_vals:
-            for pulls in bandit_pulls_vals:
-                for c in bandit_c_vals:
-                    ban_csv = out_dir / f"bandit_res{res}_pulls{pulls}_c{c}_t{tidx}.csv"
-                    ban_opt = BanditOptimizer(
-                        current_ranges=current_ranges,
-                        target_idx=tidx,
-                        simulate_fn=simulate_selectivity,
-                        out_csv=ban_csv,
-                        resolution=res,
-                        total_pulls=pulls,
-                        c=c,
-                    )
-                    ban_opt.optimize()
-
-        # --- PSO
-        for popsize in pso_popsize_vals:
-            for w in pso_w_vals:
-                for c1 in pso_c1_vals:
-                    for c2 in pso_c2_vals:
-                        for nit in pso_iters_vals:
-                            pso_csv = out_dir / f"pso_pop{popsize}_w{w}_c1{c1}_c2{c2}_it{nit}_t{tidx}.csv"
-                            pso_opt = PSOSimulation(
-                                current_ranges=current_ranges,
-                                target_idx=tidx,
-                                simulate_fn=simulate_selectivity,
-                                out_csv=pso_csv,
-                                popsize=popsize,
-                                w=w,
-                                c1=c1,
-                                c2=c2,
-                                n_iters=nit,
-                                random_seed=42,
-                            )
-                            pso_opt.optimize()
-
-    print("All analytic optimization runs complete.")
+        save_live_plot(np.arange(1, len(iter_vals)+1), iter_vals, best_vals, tag, target_point)
 
 
+        pd.DataFrame([{
+            "optimizer": "CMAES",
+            "sigma0": sigma0,
+            "popsize": popsize,
+            "repeat": repeat,
+            "iteration": it + 1,
+            "iteration_selectivity": iter_best,
+            "best_so_far": best_so_far,
+            "iteration_best_found": best_iter,
+            "target_x": target_point[0],
+            "target_y": target_point[1],
+            "target_z": target_point[2],
+            "currents": iter_best_currents.tolist()
+        }]).to_csv(csv_path, mode="a", index=False, header=not header_written)
+        header_written = True
+
+    return {
+        "optimizer": "CMAES",
+        "tag": tag,
+        "best": best_so_far,
+        "iter": best_iter,
+        "sigma0": sigma0,
+        "popsize": popsize,
+        "repeat": repeat,
+        "target_point": target_point,
+    }
+
+# ==============================================================
+# BO FULL
+# ==============================================================
+def run_bo_experiment(acq_func, kappa, xi, n_init, repeat, target_point):
+    tag = f"BO_{acq_func}_k{kappa}_x{xi}_n{n_init}_r{repeat}"
+    csv_path = os.path.join(OUTPUT_DIR, f"{tag}_progress.csv")
+    header_written = False
+    eps = 1e-9
+
+    space = [(-RANGE, RANGE)] * N_ELECTRODES
+    opt = SkOptimizer(
+        space,
+        base_estimator="GP",
+        acq_func=acq_func,
+        acq_func_kwargs={"kappa": kappa, "xi": xi},
+        random_state=repeat,
+    )
+
+    best_so_far, best_iter = -np.inf, 0
+    iter_vals, best_vals = [], []
+
+    for it in tqdm(range(N_ITER), desc=tag, leave=False):
+        x = np.clip(opt.ask(), -RANGE + eps, RANGE - eps)
+        y = eval_selectivity(x, target_point)
+        try:
+            opt.tell(list(x), float(y))
+        except ValueError:
+            x = np.clip(x, -RANGE + 1e-6, RANGE - 1e-6)
+            opt.tell(list(x), float(y))
+
+        iter_sel = -y
+        iter_vals.append(iter_sel)
+        if iter_sel > best_so_far:
+            best_so_far, best_iter = iter_sel, it + 1
+        best_vals.append(best_so_far)
+
+        save_live_plot(np.arange(1, len(iter_vals)+1), iter_vals, best_vals, tag, target_point)
+
+
+        pd.DataFrame([{
+            "optimizer": "BO",
+            "acq_func": acq_func,
+            "kappa": kappa,
+            "xi": xi,
+            "n_init": n_init,
+            "repeat": repeat,
+            "iteration": it + 1,
+            "iteration_selectivity": iter_sel,
+            "best_so_far": best_so_far,
+            "iteration_best_found": best_iter,
+            "target_x": target_point[0],
+            "target_y": target_point[1],
+            "target_z": target_point[2],
+            "currents": x.tolist()
+        }]).to_csv(csv_path, mode="a", index=False, header=not header_written)
+        header_written = True
+
+    return {
+        "optimizer": "BO",
+        "tag": tag,
+        "best": best_so_far,
+        "iter": best_iter,
+        "acq_func": acq_func,
+        "kappa": kappa,
+        "xi": xi,
+        "n_init": n_init,
+        "repeat": repeat,
+        "target_point": target_point,
+    }
+
+# ==============================================================
+# MAIN BENCHMARK
+# ==============================================================
 if __name__ == "__main__":
-    main()
+    start = time.time()
+    all_runs = []
+
+
+
+    print("\n=== PHASE 1: Full-space CMA-ES ===")
+    for sigma0, popsize in product(SIGMAS, POPSIZES):
+        for r, tp in product(range(REPEATS), TARGET_POINTS):
+            all_runs.append(run_cma_experiment(sigma0, popsize, r, tp))
+
+    print("\n=== PHASE 2: Full-space Bayesian Optimisation ===")
+    for acq, kappa, xi, n_init in product(ACQ_FUNCS, KAPPAS, XIS, N_INIT_POINTS):
+        for r, tp in product(range(REPEATS), TARGET_POINTS):
+            all_runs.append(run_bo_experiment(acq, kappa, xi, n_init, r, tp))
+
+    df = pd.DataFrame(all_runs)
+    summary_path = os.path.join(OUTPUT_DIR, "optimizer_summary.csv")
+    df.to_csv(summary_path, index=False)
+
+    best_overall = df.loc[df["best"].idxmax()]
+    print("\n==================== FINAL COMPARISON REPORT ====================")
+    print(f"Total runs: {len(df)} | Runtime: {(time.time()-start)/60:.1f} min\n")
+    print(df.groupby("optimizer")["best"].describe())
+    print("\nTop 10 performers:")
+    print(df.sort_values("best", ascending=False).head(10).to_string(index=False))
+    print("\nBest overall:")
+    print(f" Optimiser : {best_overall['optimizer']}")
+    print(f" Tag        : {best_overall['tag']}")
+    print(f" Best Selectivity : {best_overall['best']:.4f}")
+    print(f" Iteration found  : {best_overall['iter']}")
+    print(f" Target Point     : {best_overall['target_point']}")
+    print(f" Hyperparameters  : { {k:v for k,v in best_overall.items() if k not in ['optimizer','tag','best','iter']} }")
+    print(f" Summary saved → {summary_path}")
+    print("===============================================================\n")
