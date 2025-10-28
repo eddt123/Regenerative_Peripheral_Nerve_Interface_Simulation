@@ -27,8 +27,8 @@ RANGE = 1e-3
 N_ITER = 100
 REPEATS = 5
 
-SIGMAS   = [0.2e-3, 0.3e-3]
-POPSIZES = [12, 16]
+SIGMAS   = [0.2e-3]
+POPSIZES = [16]
 DIMS_TO_TEST = [2, 4, 6, 8, 12]
 
 radius, height, sigma = 0.01, 0.04, 0.25
@@ -36,7 +36,7 @@ radius, height, sigma = 0.01, 0.04, 0.25
 TARGET_POINTS = [
     (0.0, 0.0, 0.0),
     (0.002, 0.0035, 0.010),
-    (-0.003, -0.002, -0.015),
+    #(-0.003, -0.002, -0.015),
 ]
 
 # ==============================================================
@@ -68,7 +68,7 @@ def save_live_plot(iters, vals, bests, tag, target_point):
     plt.xlabel("Iteration"); plt.ylabel("Selectivity")
     plt.grid(alpha=0.3); plt.legend(fontsize=8)
     plt.tight_layout()
-    plt.savefig(os.path.join(OUTPUT_DIR,f"{tag}_progress.png"),dpi=160)
+    plt.savefig(os.path.join(OUTPUT_DIR,f"{tag}_{target_point}.png"),dpi=160)
     plt.close()
 
 # ==============================================================
