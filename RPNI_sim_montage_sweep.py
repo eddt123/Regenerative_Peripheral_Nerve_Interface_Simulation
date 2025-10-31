@@ -25,7 +25,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 N_ELECTRODES = 12
 RANGE = 1e-3
 N_ITER = 100
-REPEATS = 5
+REPEATS = 1
 
 SIGMAS   = [0.2e-3]
 POPSIZES = [16]
@@ -36,7 +36,7 @@ radius, height, sigma = 0.01, 0.04, 0.25
 TARGET_POINTS = [
     (0.0, 0.0, 0.0),
     (0.002, 0.0035, 0.010),
-    #(-0.003, -0.002, -0.015),
+    (-0.003, -0.002, -0.015),
 ]
 
 # ==============================================================
@@ -131,147 +131,6 @@ def run_cma_montage_variable_dim(sigma0, popsize, repeat,
             best_global.update({"best_reward":best_so_far,
                                 "montage_dim":dim,"currents":best_c.tolist()})
     return best_global
-
-
-# ==============================================================
-# CMA-ES Two-Stage (2D sweep → 12D fine-tune, warm-start version)
-# ==============================================================
-def run_cma_two_stage(sigma0, popsize, repeat, target_point):
-    """
-    Two-phase optimisation:
-      1) 2D CMA-ES in a reduced montage space (coarse global search)
-      2) Switches to full 12D CMA-ES once improvement stagnates for 10 iters
-         using a warm-started mean and reduced step-size for stability.
-
-    Returns best configuration and logs iteration history.
-    """
-    tag = f"CMAES_TWOSTAGE_s{sigma0:.1e}_p{popsize}_r{repeat}"
-    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
-    header_written = False
-
-    # --- Phase 1: 2D montage basis (opposite pairs for coarse exploration) ---
-    montages = np.array([
-        [+1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, +1, -1, 0, 0, 0, 0]
-    ])
-    dim_reduced = montages.shape[0]
-
-    es = CMAEvolutionStrategy(np.zeros(dim_reduced), sigma0, {"popsize": popsize, "verb_disp": 0})
-
-    best_so_far = -np.inf
-    best_iter = 0
-    iter_vals, best_vals = [], []
-    plateau_counter = 0
-    PLATEAU_ITERS = 10
-    IMPROVEMENT_THRESH = 1e-4
-    switched = False
-
-    # ===============================================================
-    # Phase 1 — 2D reduced-space search
-    # ===============================================================
-    for it in tqdm(range(N_ITER), desc=tag, leave=False):
-        weights_list = es.ask()
-        Y, combos = [], []
-
-        for w in weights_list:
-            # combine 2D montages
-            currents = np.sum([w[j] * montages[j] for j in range(dim_reduced)], axis=0)
-            currents = np.clip(currents, -RANGE, RANGE)
-            obj = eval_selectivity(currents, target_point)
-            Y.append(obj)
-            combos.append(currents)
-
-        es.tell(weights_list, Y)
-        iter_best = -np.min(Y)
-        iter_best_idx = int(np.argmin(Y))
-        iter_best_currents = combos[iter_best_idx]
-
-        iter_vals.append(iter_best)
-        if iter_best > best_so_far + IMPROVEMENT_THRESH:
-            best_so_far, best_iter = iter_best, it + 1
-            plateau_counter = 0
-        else:
-            plateau_counter += 1
-        best_vals.append(best_so_far)
-
-        # Plot progress
-        save_live_plot(np.arange(1, len(iter_vals)+1), iter_vals, best_vals, tag, target_point)
-
-        pd.DataFrame([{
-            "phase": "reduced2D",
-            "sigma0": sigma0, "popsize": popsize, "repeat": repeat,
-            "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
-            "iteration": it+1, "selectivity": iter_best, "best_so_far": best_so_far,
-            "plateau_counter": plateau_counter, "switched": switched,
-            "currents": iter_best_currents.tolist()
-        }]).to_csv(csv_path, mode="a", index=False, header=not header_written)
-        header_written = True
-
-        # ===============================================================
-        # Switch condition: plateau detected → fine-tuning phase
-        # ===============================================================
-        if plateau_counter >= PLATEAU_ITERS and not switched:
-            switched = True
-            print(f"[{tag}] Plateau detected at iter {it}. Switching to full 12D fine-tune (warm-start).")
-
-            # --- Warm-start setup ---
-            mean_2d = es.result.xbest
-            sigma_fine = es.sigma * 0.3           # smaller step size for stability
-            mean_12d = np.zeros(12)
-            # project coarse solution into full space
-            mean_12d += np.sum([mean_2d[j] * montages[j] for j in range(dim_reduced)], axis=0)
-
-            # start fine CMA-ES from warm-started mean
-            es = CMAEvolutionStrategy(mean_12d, sigma_fine, {"popsize": popsize, "verb_disp": 0})
-            plateau_counter = 0
-            print(f"[{tag}] Warm-started fine-tune: σ={sigma_fine:.2e}")
-
-        # ===============================================================
-        # Phase 2 — Fine-tuning in 12D space
-        # ===============================================================
-        if switched:
-            weights_list = es.ask()
-            Y, combos = [], []
-            for w in weights_list:
-                currents = np.clip(w, -RANGE, RANGE)
-                obj = eval_selectivity(currents, target_point)
-                Y.append(obj)
-                combos.append(currents)
-
-            es.tell(weights_list, Y)
-            iter_best = -np.min(Y)
-            iter_best_idx = int(np.argmin(Y))
-            iter_best_currents = combos[iter_best_idx]
-
-            iter_vals.append(iter_best)
-            if iter_best > best_so_far:
-                best_so_far, best_iter = iter_best, it + 1
-            best_vals.append(best_so_far)
-
-            save_live_plot(np.arange(1, len(iter_vals)+1), iter_vals, best_vals, tag+"_fine", target_point)
-
-            pd.DataFrame([{
-                "phase": "fine12D",
-                "sigma0": sigma0, "popsize": popsize, "repeat": repeat,
-                "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
-                "iteration": it+1, "selectivity": iter_best, "best_so_far": best_so_far,
-                "plateau_counter": plateau_counter, "switched": switched,
-                "currents": iter_best_currents.tolist()
-            }]).to_csv(csv_path, mode="a", index=False, header=False)
-
-    # ===============================================================
-    # Return final summary
-    # ===============================================================
-    return {
-        "optimizer": "CMAES_TWOSTAGE",
-        "tag": tag,
-        "best": float(best_so_far),
-        "iter": int(best_iter),
-        "sigma0": sigma0,
-        "popsize": popsize,
-        "repeat": repeat,
-        "target_point": target_point
-    }
 
 
 
