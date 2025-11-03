@@ -40,7 +40,7 @@ from skopt import Optimizer as SkOptimizer
 # ======================================================================
 # CONFIG
 # ======================================================================
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "benchmark_long")
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "benchmark_extra")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Tissue / geometry
@@ -98,6 +98,34 @@ PSO_W = 0.729    # Clerc's constriction coefficient
 PSO_C1 = 1.49445
 PSO_C2 = 1.49445
 PSO_VCLAMP = 0.5 * RANGE
+
+# ======================================================================
+# EXTRA OPTIMIZERS: DE, CEM, SA (dimension-scaled, fair budgets)
+# ======================================================================
+
+# ---- Differential Evolution (DE) ----
+def de_population_size(N):
+    """SciPy convention: population size = pop_factor * N (candidate vectors)."""
+    return max(10 * N, 40)     # classic 10*N with a small floor for very small N
+
+DE_F  = 0.8                    # differential weight
+DE_CR = 0.9                    # crossover rate
+
+# ---- Cross-Entropy Method (CEM) ----
+def cem_popsize(N):
+    """Samples per iteration."""
+    return max(8 * N, 64)
+
+CEM_ELITE_FRAC = 0.2           # top fraction kept
+CEM_ALPHA      = 0.7           # smoothing (0..1)
+CEM_SIGMA0     = 0.35e-3       # initial per-dimension std
+CEM_SIGMA_MIN  = 1e-6          # floor to avoid collapse
+
+# ---- Simulated Annealing (SA) ----
+SA_ALPHA        = 0.985        # geometric cooling factor per step
+SA_STEP_SIGMA   = 0.25 * RANGE # proposal step std (per-dim) before projection
+SA_WARMUP_SAMPLES = 40         # to set T0 fairly (deducted from budget)
+
 
 # ======================================================================
 # PROJECTION: exact zero-sum + box
@@ -614,6 +642,311 @@ def run_pso(grid, repeat, target_point, eval_budget):
     }
 
 # ======================================================================
+# Differential Evolution (custom DE/rand/1/bin, correct projection)
+# ======================================================================
+def run_de(grid, repeat, target_point, eval_budget):
+    N = grid[0] * grid[1]
+    seed = SEED_BASE + 4000*repeat + N
+    rng = np.random.default_rng(seed)
+    tag = make_tag("DE", grid, repeat, target_point)
+    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
+
+    NP = de_population_size(N)          # number of candidate vectors in the population
+    iters = max(1, eval_budget // NP)   # each generation evaluates ~NP candidates
+    used_budget = iters * NP
+
+    # Init feasible population
+    X = np.vstack([
+        project_currents(rng.uniform(-RANGE, RANGE, N), -RANGE, RANGE, ZERO_SUM)
+        for _ in range(NP)
+    ])
+    # Evaluate
+    F_vals = np.empty(NP, dtype=float)
+    for i in range(NP):
+        y, _, _ = eval_selectivity(X[i], target_point, grid, rng_seed=seed)
+        F_vals[i] = y  # minimize y
+
+    best_idx = int(np.argmin(F_vals))
+    best_val = F_vals[best_idx]
+    best_vec = X[best_idx].copy()
+
+    best_so_far = -best_val
+    best_at_eval = NP
+
+    xs_axis  = [NP]
+    step_vals = [best_so_far]
+    best_vals = [best_so_far]
+    header_written = False
+
+    log_step(csv_path, {
+        "optimizer": "DE",
+        "n_rows": grid[0], "n_per_row": grid[1], "N": N,
+        "popsize": NP, "F": DE_F, "CR": DE_CR,
+        "repeat": repeat,
+        "step_index": 1,
+        "evals_so_far": NP,
+        "step_best_selectivity": best_so_far,
+        "best_so_far": best_so_far,
+        "best_found_at_eval": best_at_eval,
+        "target_x": target_point[0],
+        "target_y": target_point[1],
+        "target_z": target_point[2],
+    }, header_written)
+    header_written = True
+
+    # Main generations
+    for gen in tqdm(range(1, iters), desc=tag, leave=False):
+        X_new = X.copy()
+        F_new = F_vals.copy()
+
+        for i in range(NP):
+            # choose 3 distinct indices != i
+            idxs = rng.choice([j for j in range(NP) if j != i], size=3, replace=False)
+            r1, r2, r3 = idxs
+            # mutation
+            V = X[r1] + DE_F * (X[r2] - X[r3])
+            # binomial crossover
+            cross = rng.random(N) < DE_CR
+            if not np.any(cross):
+                cross[rng.integers(0, N)] = True
+            U = np.where(cross, V, X[i])
+            # project & evaluate
+            U = project_currents(U, -RANGE, RANGE, ZERO_SUM)
+            y, _, Uproj = eval_selectivity(U, target_point, grid, rng_seed=seed)
+            # selection
+            if y < F_vals[i]:
+                X_new[i] = Uproj
+                F_new[i] = y
+
+        X, F_vals = X_new, F_new
+
+        # Best of this generation
+        b_idx = int(np.argmin(F_vals))
+        if F_vals[b_idx] < best_val:
+            best_val = F_vals[b_idx]
+            best_vec = X[b_idx].copy()
+
+        evals_so_far = (gen+1) * NP
+        step_best = -float(np.min(F_vals))
+        if step_best > best_so_far:
+            best_so_far = step_best
+            best_at_eval = evals_so_far
+
+        xs_axis.append(evals_so_far)
+        step_vals.append(step_best)
+        best_vals.append(best_so_far)
+
+        log_step(csv_path, {
+            "optimizer": "DE",
+            "n_rows": grid[0], "n_per_row": grid[1], "N": N,
+            "popsize": NP, "F": DE_F, "CR": DE_CR,
+            "repeat": repeat,
+            "step_index": gen + 1,
+            "evals_so_far": evals_so_far,
+            "step_best_selectivity": step_best,
+            "best_so_far": best_so_far,
+            "best_found_at_eval": best_at_eval,
+            "target_x": target_point[0],
+            "target_y": target_point[1],
+            "target_z": target_point[2],
+        }, header_written)
+
+    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+    return {
+        "optimizer": "DE", "tag": tag, "best": float(best_so_far),
+        "best_found_at_eval": int(best_at_eval),
+        "N": N, "grid": grid, "repeat": repeat, "target_point": target_point,
+        "used_evals": used_budget, "popsize": NP
+    }
+
+
+# ======================================================================
+# Cross-Entropy Method (CEM) with projection
+# ======================================================================
+def run_cem(grid, repeat, target_point, eval_budget):
+    N = grid[0] * grid[1]
+    seed = SEED_BASE + 5000*repeat + N
+    rng = np.random.default_rng(seed)
+    tag = make_tag("CEM", grid, repeat, target_point)
+    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
+
+    K = cem_popsize(N)
+    iters = max(1, eval_budget // K)
+    used_budget = iters * K
+
+    m = np.zeros(N, dtype=float)           # start at 0 mA
+    s = np.full(N, CEM_SIGMA0, dtype=float)
+
+    best_so_far = -np.inf
+    best_at_eval = 0
+    xs_axis, step_vals, best_vals = [], [], []
+    header_written = False
+    evals_so_far = 0
+
+    for it in tqdm(range(iters), desc=tag, leave=False):
+        # Sample & project
+        X = m + s * rng.standard_normal(size=(K, N))
+        X = np.vstack([project_currents(x, -RANGE, RANGE, ZERO_SUM) for x in X])
+
+        Y = np.empty(K, dtype=float)
+        for i in range(K):
+            y, _, _ = eval_selectivity(X[i], target_point, grid, rng_seed=seed)
+            Y[i] = y
+        evals_so_far += K
+
+        # Rank by MIN(y) -> MAX(selectivity)
+        idx = np.argsort(Y)
+        elite_k = max(1, int(np.ceil(CEM_ELITE_FRAC * K)))
+        elites = X[idx[:elite_k]]
+
+        # Update parameters with smoothing
+        new_m = elites.mean(axis=0)
+        new_s = elites.std(axis=0)
+        m = (1 - CEM_ALPHA) * m + CEM_ALPHA * new_m
+        s = (1 - CEM_ALPHA) * s + CEM_ALPHA * np.maximum(new_s, CEM_SIGMA_MIN)
+
+        # Clip to bounds (center & spread)
+        m = np.clip(m, -RANGE, RANGE)
+        s = np.clip(s, CEM_SIGMA_MIN, RANGE)
+
+        step_best = -float(np.min(Y))
+        if step_best > best_so_far:
+            best_so_far = step_best
+            best_at_eval = evals_so_far
+
+        xs_axis.append(evals_so_far)
+        step_vals.append(step_best)
+        best_vals.append(best_so_far)
+
+        log_step(csv_path, {
+            "optimizer": "CEM",
+            "n_rows": grid[0], "n_per_row": grid[1], "N": N,
+            "popsize": K, "elite_frac": CEM_ELITE_FRAC, "alpha": CEM_ALPHA,
+            "repeat": repeat,
+            "step_index": it + 1,
+            "evals_so_far": evals_so_far,
+            "step_best_selectivity": step_best,
+            "best_so_far": best_so_far,
+            "best_found_at_eval": best_at_eval,
+            "target_x": target_point[0],
+            "target_y": target_point[1],
+            "target_z": target_point[2],
+        }, header_written)
+        header_written = True
+
+    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+    return {
+        "optimizer": "CEM", "tag": tag, "best": float(best_so_far),
+        "best_found_at_eval": int(best_at_eval),
+        "N": N, "grid": grid, "repeat": repeat, "target_point": target_point,
+        "used_evals": used_budget, "popsize": K
+    }
+
+
+# ======================================================================
+# Simulated Annealing (projected random-walk, fair budget)
+# ======================================================================
+def run_sa(grid, repeat, target_point, eval_budget):
+    N = grid[0] * grid[1]
+    seed = SEED_BASE + 6000*repeat + N
+    rng = np.random.default_rng(seed)
+    tag = make_tag("SA", grid, repeat, target_point)
+    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
+
+    # Warm-up to set T0 by objective spread (deduct from budget)
+    warm = min(SA_WARMUP_SAMPLES, max(0, eval_budget // 10))
+    temps = []
+    if warm > 0:
+        vals = []
+        for _ in range(warm):
+            x = rng.uniform(-RANGE, RANGE, N)
+            x = project_currents(x, -RANGE, RANGE, ZERO_SUM)
+            y, _, _ = eval_selectivity(x, target_point, grid, rng_seed=seed)
+            vals.append(float(y))
+        vals = np.array(vals)
+        T0 = np.std(vals) if np.std(vals) > 1e-12 else 1.0
+    else:
+        T0 = 1.0
+
+    remaining = max(1, eval_budget - warm)
+
+    # Start from best warm-up or random feasible
+    if warm > 0:
+        best_idx = int(np.argmin(vals))
+        x = project_currents(rng.uniform(-RANGE, RANGE, N), -RANGE, RANGE, ZERO_SUM) if best_idx < 0 else None
+        x = project_currents(rng.uniform(-RANGE, RANGE, N), -RANGE, RANGE, ZERO_SUM) if x is None else x
+    else:
+        x = project_currents(rng.uniform(-RANGE, RANGE, N), -RANGE, RANGE, ZERO_SUM)
+
+    y, _, _ = eval_selectivity(x, target_point, grid, rng_seed=seed)
+
+    x_best = x.copy()
+    y_best = y
+
+    best_so_far = -float(y_best)
+    best_at_eval = warm + 1
+
+    xs_axis  = [warm + 1]
+    step_vals = [best_so_far]
+    best_vals = [best_so_far]
+    header_written = False
+
+    T = T0
+    for k in tqdm(range(1, remaining), desc=tag, leave=False):
+        # Gaussian proposal + projection
+        prop = x + SA_STEP_SIGMA * rng.standard_normal(N)
+        prop = project_currents(prop, -RANGE, RANGE, ZERO_SUM)
+        y_prop, _, _ = eval_selectivity(prop, target_point, grid, rng_seed=seed)
+
+        # Metropolis acceptance (minimize y)
+        dy = y_prop - y
+        if dy < 0 or rng.random() < np.exp(-dy / max(T, 1e-12)):
+            x, y = prop, y_prop
+
+        # Track global best
+        if y < y_best:
+            x_best, y_best = x.copy(), y
+
+        # Update temp
+        T *= SA_ALPHA
+
+        evals_so_far = warm + 1 + k
+        step_best = -float(y_best)
+        if step_best > best_so_far:
+            best_so_far = step_best
+            best_at_eval = evals_so_far
+
+        # Log sparsely to keep files small
+        if k == 1 or k == remaining-1 or k % max(10, N) == 0:
+            xs_axis.append(evals_so_far)
+            step_vals.append(-float(y))
+            best_vals.append(best_so_far)
+            log_step(csv_path, {
+                "optimizer": "SA",
+                "n_rows": grid[0], "n_per_row": grid[1], "N": N,
+                "alpha": SA_ALPHA, "step_sigma": SA_STEP_SIGMA, "T0": T0,
+                "repeat": repeat,
+                "step_index": k + 1,
+                "evals_so_far": evals_so_far,
+                "step_best_selectivity": -float(y),
+                "best_so_far": best_so_far,
+                "best_found_at_eval": best_at_eval,
+                "target_x": target_point[0],
+                "target_y": target_point[1],
+                "target_z": target_point[2],
+            }, header_written)
+            header_written = True
+
+    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+    return {
+        "optimizer": "SA", "tag": tag, "best": float(best_so_far),
+        "best_found_at_eval": int(best_at_eval),
+        "N": N, "grid": grid, "repeat": repeat, "target_point": target_point,
+        "used_evals": warm + remaining
+    }
+
+
+# ======================================================================
 # STATISTICAL ANALYSIS (key fix #7)
 # ======================================================================
 def compute_statistics(df_summary):
@@ -690,7 +1023,9 @@ if __name__ == "__main__":
     
     print("\n=== FIXED Fair Benchmark: Dimension-scaled, statistically powered ===\n")
     
-    # Landscape characterisation
+    # ------------------------------------------------------------------
+    # Landscape Characterisation
+    # ------------------------------------------------------------------
     print("Characterizing optimization landscapes...")
     landscape_results = []
     for grid in ELECTRODE_GRIDS:
@@ -703,7 +1038,9 @@ if __name__ == "__main__":
     df_landscape.to_csv(os.path.join(OUTPUT_DIR, "landscape_characterization.csv"), index=False)
     print(f"Landscape characterization saved.\n")
     
-    # Main optimization runs
+    # ------------------------------------------------------------------
+    # Main Optimization Runs
+    # ------------------------------------------------------------------
     print("Running optimization benchmarks...")
     summaries = []
     
@@ -714,23 +1051,40 @@ if __name__ == "__main__":
         print(f"\nN={N}, repeat={repeat+1}/{REPEATS}, target={tp}")
         print(f"  Budget: {budget} evaluations")
         
-        # Random baseline
-        #summaries.append(run_random_search(grid, repeat, tp, budget))
+        # -----------------------------
+        # Optimizers (commented = skip)
+        # -----------------------------
         
-        # CMA-ES
-        summaries.append(run_cma(grid, repeat, tp, budget))
+        # --- Random Search ---
+        # summaries.append(run_random_search(grid, repeat, tp, budget))
         
-        # BO (sequential)
-        #summaries.append(run_bo(grid, repeat, tp, budget))
+        # --- CMA-ES ---
+        # summaries.append(run_cma(grid, repeat, tp, budget))
         
-        # PSO
-        summaries.append(run_pso(grid, repeat, tp, budget))
+        # --- Bayesian Optimization ---
+        # summaries.append(run_bo(grid, repeat, tp, budget))
+        
+        # --- Particle Swarm Optimization ---
+        # summaries.append(run_pso(grid, repeat, tp, budget))
+        
+        # --- Differential Evolution ---
+        summaries.append(run_de(grid, repeat, tp, budget))
+
+        # --- Cross-Entropy Method ---
+        summaries.append(run_cem(grid, repeat, tp, budget))
+
+        # --- Simulated Annealing ---
+        summaries.append(run_sa(grid, repeat, tp, budget))
     
-    # Save raw results
+    # ------------------------------------------------------------------
+    # Save Raw Results
+    # ------------------------------------------------------------------
     df = pd.DataFrame(summaries)
     df.to_csv(os.path.join(OUTPUT_DIR, "optimizer_summary.csv"), index=False)
     
-    # KEY FIX #7: Statistical analysis
+    # ------------------------------------------------------------------
+    # Statistical Analysis
+    # ------------------------------------------------------------------
     print("\n=== Computing Statistics ===")
     df_stats = compute_statistics(df)
     df_stats.to_csv(os.path.join(OUTPUT_DIR, "statistics_summary.csv"), index=False)
@@ -739,10 +1093,12 @@ if __name__ == "__main__":
     df_tests = pairwise_tests(df)
     df_tests.to_csv(os.path.join(OUTPUT_DIR, "pairwise_tests.csv"), index=False)
     
-    # Summary plots
+    # ------------------------------------------------------------------
+    # Summary Plots
+    # ------------------------------------------------------------------
     print("\n=== Generating Summary Plots ===")
     
-    # 1. Performance by dimension
+    # 1. Performance by dimension (boxplots)
     fig, axes = plt.subplots(1, len(ELECTRODE_GRIDS), figsize=(15, 4))
     if len(ELECTRODE_GRIDS) == 1:
         axes = [axes]
@@ -753,9 +1109,16 @@ if __name__ == "__main__":
         
         optimizers = ['Random', 'CMAES', 'BO', 'PSO']
         colors = ['gray', 'blue', 'green', 'red']
-        
-        positions = []
-        labels = []
+
+        # Include added optimizers if present
+        extra_opts   = ['DE', 'CEM', 'SA']
+        extra_colors = ['purple', 'orange', 'black']
+        present = data['optimizer'].unique().tolist()
+        to_add = [o for o in extra_opts if o in present]
+        optimizers = optimizers + to_add
+        colors     = colors + [extra_colors[extra_opts.index(o)] for o in to_add]
+
+        positions, labels = [], []
         for i, opt in enumerate(optimizers):
             opt_data = data[data['optimizer'] == opt]['best'].values
             if len(opt_data) > 0:
@@ -783,43 +1146,39 @@ if __name__ == "__main__":
         if len(TARGET_POINTS) == 1:
             axes = [axes]
         
-    for t_idx, tp in enumerate(TARGET_POINTS):
-        for opt in ['Random', 'CMAES', 'BO', 'PSO']:
-            # Handle the BO file-name prefix (e.g. BO_EI)
-            prefix = f"BO_{BO_ACQ}" if opt == 'BO' else opt
+        for t_idx, tp in enumerate(TARGET_POINTS):
+            for opt in ['Random', 'CMAES', 'BO', 'PSO', 'DE', 'CEM', 'SA']:
+                prefix = f"BO_{BO_ACQ}" if opt == 'BO' else opt
+                all_curves = []
+                for rep in range(REPEATS):
+                    tag = make_tag(prefix, grid, rep, tp)
+                    csv_file = os.path.join(OUTPUT_DIR, f"{tag}.csv")
+                    if os.path.exists(csv_file):
+                        try:
+                            df_run = pd.read_csv(csv_file)
+                            all_curves.append(df_run[['evals_so_far', 'best_so_far']].values)
+                        except Exception:
+                            pass
 
-            # Load all CSV files for this combination
-            all_curves = []
-            for rep in range(REPEATS):
-                tag = make_tag(prefix, grid, rep, tp)
-                csv_file = os.path.join(OUTPUT_DIR, f"{tag}.csv")
-                if os.path.exists(csv_file):
-                    try:
-                        df_run = pd.read_csv(csv_file)
-                        all_curves.append(df_run[['evals_so_far', 'best_so_far']].values)
-                    except Exception:
-                        pass
-
-                
                 if all_curves:
-                    # Interpolate to common evaluation points
                     max_evals = max(c[-1, 0] for c in all_curves)
                     eval_points = np.linspace(0, max_evals, 100)
                     
-                    interpolated = []
-                    for curve in all_curves:
-                        interp = np.interp(eval_points, curve[:, 0], curve[:, 1])
-                        interpolated.append(interp)
-                    
+                    interpolated = [np.interp(eval_points, c[:, 0], c[:, 1]) for c in all_curves]
                     mean_curve = np.mean(interpolated, axis=0)
                     std_curve = np.std(interpolated, axis=0)
                     
-                    color = {'Random': 'gray', 'CMAES': 'blue', 'BO': 'green', 'PSO': 'red'}[opt]
-                    axes[t_idx].plot(eval_points, mean_curve, label=opt, color=color, lw=2)
-                    axes[t_idx].fill_between(eval_points, 
-                                            mean_curve - std_curve,
-                                            mean_curve + std_curve,
-                                            alpha=0.2, color=color)
+                    color_map = {
+                        'Random':'gray', 'CMAES':'blue', 'BO':'green', 'PSO':'red',
+                        'DE':'purple', 'CEM':'orange', 'SA':'black'
+                    }
+                    if opt in color_map:
+                        axes[t_idx].plot(eval_points, mean_curve, label=opt,
+                                         color=color_map[opt], lw=2)
+                        axes[t_idx].fill_between(eval_points,
+                                                 mean_curve - std_curve,
+                                                 mean_curve + std_curve,
+                                                 alpha=0.2, color=color_map[opt])
             
             axes[t_idx].set_xlabel('Function evaluations')
             axes[t_idx].set_ylabel('Selectivity' if t_idx == 0 else '')
@@ -841,7 +1200,6 @@ if __name__ == "__main__":
         optimizers = sorted(df[df['N'] == N]['optimizer'].unique())
         n_opts = len(optimizers)
         
-        # Create p-value matrix
         pval_matrix = np.ones((n_opts, n_opts))
         for _, row in test_data.iterrows():
             i = optimizers.index(row['optimizer_1'])
@@ -857,7 +1215,6 @@ if __name__ == "__main__":
         ax.set_xticklabels(optimizers)
         ax.set_yticklabels(optimizers)
         
-        # Annotate cells
         for i in range(n_opts):
             for j in range(n_opts):
                 if i != j:
@@ -879,14 +1236,16 @@ if __name__ == "__main__":
         plt.savefig(os.path.join(OUTPUT_DIR, f"significance_heatmap_N{N}.png"), dpi=200)
         plt.close()
     
-    # Print summary statistics
+    # ------------------------------------------------------------------
+    # Print Statistical Summary
+    # ------------------------------------------------------------------
     print("\n" + "="*70)
     print("STATISTICAL SUMMARY (Mean ± 95% CI)")
     print("="*70)
     for N in sorted(df_stats['N'].unique()):
         print(f"\n--- N={N} dimensions ---")
         subset = df_stats[df_stats['N'] == N]
-        for opt in ['Random', 'CMAES', 'BO', 'PSO']:
+        for opt in ['Random', 'CMAES', 'BO', 'PSO', 'DE', 'CEM', 'SA']:
             opt_data = subset[subset['optimizer'] == opt]
             if len(opt_data) > 0:
                 mean = opt_data['mean'].mean()
@@ -910,14 +1269,16 @@ if __name__ == "__main__":
     print(f"Results saved to: {OUTPUT_DIR}")
     print(f"{'='*70}\n")
     
-    # Final summary table
+    # ------------------------------------------------------------------
+    # Final Summary Table
+    # ------------------------------------------------------------------
     print("\nFINAL PERFORMANCE TABLE")
     print("-" * 90)
     print(f"{'Optimizer':<12} {'N':<4} {'Mean':<10} {'Median':<10} {'Std':<10} {'Best':<10} {'Worst':<10}")
     print("-" * 90)
     
     for N in sorted(df['N'].unique()):
-        for opt in ['Random', 'CMAES', 'BO', 'PSO']:
+        for opt in ['Random', 'CMAES', 'BO', 'PSO', 'DE', 'CEM', 'SA']:
             opt_data = df[(df['N'] == N) & (df['optimizer'] == opt)]['best'].values
             if len(opt_data) > 0:
                 print(f"{opt:<12} {N:<4} {np.mean(opt_data):<10.4f} "
