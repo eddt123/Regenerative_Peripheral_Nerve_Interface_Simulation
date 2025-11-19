@@ -40,7 +40,7 @@ from skopt import Optimizer as SkOptimizer
 # ======================================================================
 # CONFIG
 # ======================================================================
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "benchmark_extra")
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "benchmark_novel")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Tissue / geometry
@@ -51,28 +51,45 @@ SIGMA_T  = 0.25   # S/m
 # Electrode layouts (N = n_rows * n_per_row)
 ELECTRODE_GRIDS = [
     #(4, 2),   # N=8
-    (2,2),
-    (3,2),
-    (3,3),
+    #(2,2),
+    #(3,2),
+    #(3,3),
     (4, 3),   # N=12
-    (4, 4),   # N=16
-    (5,5),
+    #(4, 4),   # N=16
+    #(5,5),
 ]
 
 # Currents
 RANGE     = 1e-3         # ±1 mA bounds
 ZERO_SUM  = True         # enforce sum(currents)=0
 
-# Targets
+# Targets (in metres)
 TARGET_POINTS = [
-    (0.0, 0.0, 0.0),
-    (0.002, 0.0035, 0.010),
-    (-0.003, -0.002, -0.015),
+    # --- Original 3 ---
+    (0.0,    0.0,    0.0),      # centre of cylinder
+    (0.002,  0.0035, 0.010),    # upper, off-centre (≈4.0 mm radially)
+    (-0.003, -0.002, -0.015),   # lower, off-centre (≈3.6 mm radially)
+
+    # --- Mid-plane ring (z = 0), different quadrants & radii ---
+    (0.005,   0.0,    0.0),     # +x direction, 5 mm radius
+    (0.0,    -0.005,  0.0),     # -y direction, 5 mm radius
+    (-0.004,  0.004,  0.0),     # quadrant II, ≈5.7 mm radius
+    (0.0035,  0.006,  0.0),     # quadrant I, ≈6.9 mm radius
+
+    # --- Upper half (z > 0), varied angles/radii ---
+    (0.004,   0.002,  0.015),   # upper, ≈4.5 mm radius
+    (0.0,     0.006,  0.012),   # upper, +y, 6 mm radius
+    (-0.005,  0.0,    0.018),   # upper, -x, 5 mm radius
+
+    # --- Lower half (z < 0), varied angles/radii ---
+    (0.0025, -0.0045, -0.012),  # lower, ≈5.1 mm radius
+    (-0.006, -0.003,  -0.018),  # lower, ≈6.7 mm radius
 ]
+
 
 # Budget: DIMENSION-SCALED (key fix #1)
 EVALS_PER_DIM = 200      # 200*N evaluations per run
-REPEATS = 20             # Increased from 5 (key fix #5)
+REPEATS = 20             
 SEED_BASE = 42
 
 # CMA-ES: DIMENSION-SCALED population (key fix #4)
@@ -205,9 +222,41 @@ def eval_selectivity(x, target_point, grid, rng_seed=None):
     )
     return -float(res["selectivity"]), x_orig, x_proj
 
+
+def eval_selectivity_grounded(x, target_point, grid, rng_seed=None):
+    """
+    Evaluate selectivity with grounded outer boundary, NO zero-sum constraint.
+    Only simple box clipping to [-RANGE, RANGE].
+    Returns:
+        y   : NEGATIVE selectivity (for minimizers)
+        x_c: clipped currents actually used (N-dim)
+    """
+    n_rows, n_per_row = grid
+    x_c = np.asarray(x, dtype=float)
+    x_c = np.clip(x_c, -RANGE, RANGE)
+
+    res = run_selectivity_simulation(
+        n_rows=n_rows,
+        n_per_row=n_per_row,
+        currents=x_c,
+        target_point=target_point,
+        radius=RADIUS,
+        height=HEIGHT,
+        sigma=SIGMA_T,
+        n_off_samples=1200,
+        metric="activation",
+        grounded_boundary=True,
+        R_outer=0.10,
+        rng=(SEED_BASE if rng_seed is None else rng_seed),
+    )
+    # OPTIMIZERS MINIMISE: objective = -selectivity
+    return -float(res["selectivity"]), x_c
+
+
 # ======================================================================
 # UTILITIES
 # ======================================================================
+
 def make_tag(prefix, grid, repeat, tp):
     n_rows, n_per_row = grid
     tx, ty, tz = tp
@@ -235,7 +284,7 @@ def log_step(csv_path, data_dict, header_written):
     )
 
 # ======================================================================
-# LANDSCAPE CHARACTERIZATION (key fix #8)
+# LANDSCAPE CHARACTERISATION
 # ======================================================================
 def characterize_landscape(grid, target_point, n_samples=200, seed=999):
     """
@@ -302,7 +351,7 @@ def characterize_landscape(grid, target_point, n_samples=200, seed=999):
     }
 
 # ======================================================================
-# RANDOM SEARCH BASELINE (key fix #5)
+# RANDOM SEARCH BASELINE
 # ======================================================================
 def run_random_search(grid, repeat, target_point, eval_budget):
     """Pure random search baseline."""
@@ -377,7 +426,7 @@ def run_cma(grid, repeat, target_point, eval_budget):
 
     rng = np.random.default_rng(seed)
     x0 = rng.uniform(-RANGE, RANGE, N)
-    x0 = project_currents(x0, -RANGE, RANGE, ZERO_SUM)
+    #x0 = project_currents(x0, -RANGE, RANGE, ZERO_SUM)
 
     es = CMAEvolutionStrategy(
         x0, CMA_SIGMA0,
@@ -396,7 +445,7 @@ def run_cma(grid, repeat, target_point, eval_budget):
         # Evaluate at projected feasible points
         X_eval, Y = [], []
         for x_ask in X_ask:
-            y, x_orig, x_proj = eval_selectivity(x_ask, target_point, grid, rng_seed=seed)
+            y, x_proj = eval_selectivity_grounded(x_ask, target_point, grid, rng_seed=seed)
             X_eval.append(x_proj)
             Y.append(y)
 
@@ -428,6 +477,7 @@ def run_cma(grid, repeat, target_point, eval_budget):
             "target_x": target_point[0],
             "target_y": target_point[1],
             "target_z": target_point[2],
+            'currents': X_ask
         }, header_written)
         header_written = True
 
@@ -945,6 +995,559 @@ def run_sa(grid, repeat, target_point, eval_budget):
         "used_evals": warm + remaining
     }
 
+# ======================================================================
+# Multi-Stage 1: Pair sweep (fixed current) -> 12-D CMA-ES
+# ======================================================================
+def run_ms_pairs_sweep_then_cma(grid, repeat, target_point, eval_budget,
+                                I0=0.8e-3, top_k_pairs=10):
+    """
+    Stage 0: exhaustive sweep over all electrode pairs at fixed current +/-I0.
+             Each pattern is: +I0 at i, -I0 at j, others 0.
+             Uses at most N*(N-1)/2 evaluations (or fewer if budget smaller).
+
+    Stage 1: 12-D CMA-ES warm-started at the weighted mean of the top-K pairs
+             (by selectivity). Remaining budget is used for CMA-ES.
+
+    No zero-sum projection, grounded boundary only.
+    """
+    n_rows, n_per_row = grid
+    N = n_rows * n_per_row
+    seed = SEED_BASE + 7000*repeat + N
+    rng = np.random.default_rng(seed)
+
+    tag = make_tag("MS_SWEEP_CMA", grid, repeat, target_point)
+    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
+
+    # ---------------- Stage 0: Pair sweep ----------------
+    pairs = [(i, j) for i in range(N) for j in range(N) if j > i]
+    max_pairs = len(pairs)
+
+    # If budget too small, subsample pairs
+    if max_pairs > eval_budget:
+        rng.shuffle(pairs)
+        pairs = pairs[:eval_budget]
+        max_pairs = len(pairs)
+
+    pair_results = []
+    evals_so_far = 0
+    best_so_far = -np.inf
+    best_at_eval = 0
+    xs_axis, step_vals, best_vals = [], [], []
+    header_written = False
+
+    for idx, (i, j) in enumerate(tqdm(pairs,
+                                      desc=f"{tag}_stage0_pairsweep",
+                                      leave=False)):
+        currents = np.zeros(N, dtype=float)
+        currents[i] = +I0
+        currents[j] = -I0
+
+        y, x_used = eval_selectivity_grounded(currents, target_point, grid, rng_seed=seed)
+        sel = -y
+        evals_so_far += 1
+
+        pair_results.append((sel, x_used.copy()))
+
+        if sel > best_so_far:
+            best_so_far = sel
+            best_at_eval = evals_so_far
+
+        xs_axis.append(evals_so_far)
+        step_vals.append(sel)
+        best_vals.append(best_so_far)
+
+        # Log sparsely to limit file size
+        if (idx == 0) or (idx == max_pairs - 1) or ((idx + 1) % 10 == 0):
+            log_step(csv_path, {
+                "optimizer": "MS_SWEEP_CMA",
+                "stage": 0,
+                "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
+                "repeat": repeat,
+                "evals_so_far": evals_so_far,
+                "step_best_selectivity": sel,
+                "best_so_far": best_so_far,
+                "best_found_at_eval": best_at_eval,
+                "target_x": target_point[0],
+                "target_y": target_point[1],
+                "target_z": target_point[2],
+                'currents': currents
+            }, header_written)
+            header_written = True
+
+        if evals_so_far >= eval_budget:
+            break
+
+    # If we used all budget in sweep, just return best sweep result
+    if evals_so_far >= eval_budget or len(pair_results) == 0:
+        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+        return {
+            "optimizer": "MS_SWEEP_CMA",
+            "tag": tag,
+            "best": float(best_so_far),
+            "best_found_at_eval": int(best_at_eval),
+            "N": N, "grid": grid, "repeat": repeat,
+            "target_point": target_point,
+            "used_evals": evals_so_far,
+        }
+
+    # ---------------- Build warm-start mean from top-K pairs ----------------
+    pair_results.sort(key=lambda t: t[0], reverse=True)
+    k = min(top_k_pairs, len(pair_results))
+    top = pair_results[:k]
+    # Simple average of current vectors from top-K
+    x0 = np.mean([c for (_, c) in top], axis=0)
+    x0 = np.clip(x0, -RANGE, RANGE)
+
+    # Rough sigma based on variation among top patterns
+    if k > 1:
+        stacked = np.stack([c for (_, c) in top], axis=0)
+        sigma_est = np.std(stacked, axis=0).mean()
+        sigma0 = max(0.1 * RANGE, min(0.5 * RANGE, sigma_est))
+    else:
+        sigma0 = 0.3 * RANGE
+
+    # ---------------- Stage 1: 12-D CMA-ES ----------------
+    remaining = max(0, eval_budget - evals_so_far)
+    if remaining <= 0:
+        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+        return {
+            "optimizer": "MS_SWEEP_CMA",
+            "tag": tag,
+            "best": float(best_so_far),
+            "best_found_at_eval": int(best_at_eval),
+            "N": N, "grid": grid, "repeat": repeat,
+            "target_point": target_point,
+            "used_evals": evals_so_far,
+        }
+
+    popsize = cma_popsize(N)
+    iters = max(1, remaining // popsize)
+
+    es = CMAEvolutionStrategy(
+        x0, sigma0,
+        {"popsize": popsize,
+         "verb_disp": 0,
+         "seed": seed + 1,
+         "bounds": [-RANGE, RANGE]}
+    )
+
+    for it in tqdm(range(iters), desc=f"{tag}_stage1_cma12d", leave=False):
+        X_ask = es.ask()
+        Y = []
+        gen_best = -np.inf
+
+        for x in X_ask:
+            x_c = np.clip(x, -RANGE, RANGE)
+            y, _ = eval_selectivity_grounded(x_c, target_point, grid, rng_seed=seed)
+            sel = -y
+            Y.append(y)
+
+            evals_so_far += 1
+            if sel > best_so_far:
+                best_so_far = sel
+                best_at_eval = evals_so_far
+            if sel > gen_best:
+                gen_best = sel
+
+        es.tell(X_ask, Y)
+
+        xs_axis.append(evals_so_far)
+        step_vals.append(gen_best)
+        best_vals.append(best_so_far)
+
+        log_step(csv_path, {
+            "optimizer": "MS_SWEEP_CMA",
+            "stage": 1,
+            "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
+            "repeat": repeat,
+            "step_index": it + 1,
+            "evals_so_far": evals_so_far,
+            "step_best_selectivity": gen_best,
+            "best_so_far": best_so_far,
+            "best_found_at_eval": best_at_eval,
+            "target_x": target_point[0],
+            "target_y": target_point[1],
+            "target_z": target_point[2],
+        }, header_written)
+
+        if evals_so_far >= eval_budget:
+            break
+
+    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+
+    return {
+        "optimizer": "MS_SWEEP_CMA",
+        "tag": tag,
+        "best": float(best_so_far),
+        "best_found_at_eval": int(best_at_eval),
+        "N": N, "grid": grid, "repeat": repeat,
+        "target_point": target_point,
+        "used_evals": evals_so_far,
+    }
+
+
+def run_ms_hierarchical_cma(
+    grid,
+    repeat,
+    target_point,
+    eval_budget,
+    frac_sweep=0.25,
+    frac_subspace=0.35,
+    I0=0.8e-3,
+    top_k_pairs=20,
+    max_subspace_dim=8,
+    plateau_eps=5e-3,
+    stall_gens=5,
+    min_gens=3,
+):
+    """
+    Multi-Stage Hierarchical CMA-ES (MS_HIER_CMA)
+    ============================================
+
+    Stage 0 (coarse, structured):
+        - Sweep a subset of all +/-I0 dipolar pairs (i<j), grounded only.
+        - Collect best pair patterns.
+
+    Stage 1 (data-driven low-dim subspace CMA):
+        - Take top-K pair patterns, compute PCA/SVD basis in R^N.
+        - Optimise coefficients 'a' in a d-dimensional subspace:
+              currents = m + B @ a
+        - Plateau-based early stopping; unused evals go to Stage 2.
+
+    Stage 2 (full 12-D CMA-ES):
+        - CMA-ES in full current space, starting from best currents so far,
+          using remaining budget.
+
+    No zero-sum projection: all evaluation via eval_selectivity_grounded
+    (simple clipping to [-RANGE, RANGE]).
+    """
+    from cma import CMAEvolutionStrategy
+
+    n_rows, n_per_row = grid
+    N = n_rows * n_per_row
+    seed = SEED_BASE + 7300 * repeat + N
+    rng = np.random.default_rng(seed)
+
+    tag = make_tag("MS_HIER_CMA", grid, repeat, target_point)
+    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
+
+    evals_so_far = 0
+    best_so_far = -np.inf
+    best_at_eval = 0
+    best_currents = np.zeros(N, dtype=float)
+
+    xs_axis, step_vals, best_vals = [], [], []
+    header_written = False
+
+    # --------------------------------------------------------------
+    # Stage 0: Pair sweep (coarse structured exploration)
+    # --------------------------------------------------------------
+    all_pairs = [(i, j) for i in range(N) for j in range(i + 1, N)]
+    max_pairs_possible = len(all_pairs)
+    max_pairs_budget = int(frac_sweep * eval_budget)
+
+    n_pairs_eval = min(max_pairs_possible, max_pairs_budget)
+    pair_results = []
+
+    if n_pairs_eval > 0:
+        rng.shuffle(all_pairs)
+        pairs = all_pairs[:n_pairs_eval]
+
+        for idx, (i, j) in enumerate(
+            tqdm(pairs, desc=f"{tag}_stage0_pairsweep", leave=False)
+        ):
+            currents = np.zeros(N, dtype=float)
+            currents[i] = +I0
+            currents[j] = -I0
+
+            y, x_used = eval_selectivity_grounded(
+                currents, target_point, grid, rng_seed=seed
+            )
+            sel = -y
+            evals_so_far += 1
+
+            pair_results.append((sel, x_used.copy()))
+
+            if sel > best_so_far:
+                best_so_far = sel
+                best_at_eval = evals_so_far
+                best_currents = x_used.copy()
+
+            xs_axis.append(evals_so_far)
+            step_vals.append(sel)
+            best_vals.append(best_so_far)
+
+            # Log sparsely: row currents = *literal* currents for this eval
+            if (
+                idx == 0
+                or idx == n_pairs_eval - 1
+                or ((idx + 1) % 10 == 0)
+            ):
+                row = {
+                    "optimizer": "MS_HIER_CMA",
+                    "stage": 0,
+                    "n_rows": n_rows,
+                    "n_per_row": n_per_row,
+                    "N": N,
+                    "repeat": repeat,
+                    "evals_so_far": evals_so_far,
+                    "step_best_selectivity": sel,
+                    "best_so_far": best_so_far,
+                    "best_found_at_eval": best_at_eval,
+                    "target_x": target_point[0],
+                    "target_y": target_point[1],
+                    "target_z": target_point[2],
+                    "Currents": x_used.tolist(),  # literal for this eval
+                }
+                log_step(csv_path, row, header_written)
+                header_written = True
+
+            if evals_so_far >= eval_budget:
+                break
+
+    # If we already exhausted the budget, stop here
+    if evals_so_far >= eval_budget:
+        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+        return {
+            "optimizer": "MS_HIER_CMA",
+            "tag": tag,
+            "best": float(best_so_far),
+            "best_found_at_eval": int(best_at_eval),
+            "N": N,
+            "grid": grid,
+            "repeat": repeat,
+            "target_point": target_point,
+            "used_evals": evals_so_far,
+        }
+
+    # --------------------------------------------------------------
+    # Stage 1: Data-driven low-dim subspace CMA (PCA on best pairs)
+    # --------------------------------------------------------------
+    remaining = eval_budget - evals_so_far
+
+    if remaining > N * 4 and len(pair_results) >= 2:
+        pair_results.sort(key=lambda t: t[0], reverse=True)
+        K = min(top_k_pairs, len(pair_results))
+        top = pair_results[:K]
+
+        M = np.stack([c for (sel, c) in top], axis=0)  # (K, N)
+        m_vec = np.mean(M, axis=0)
+        M_centered = M - m_vec[None, :]
+
+        U, S, Vt = np.linalg.svd(M_centered, full_matrices=False)
+        d_sub = min(max_subspace_dim, Vt.shape[0], Vt.shape[1])
+
+        if d_sub >= 1:
+            B_sub = Vt[:d_sub, :].T  # (N, d_sub)
+
+            budget_stage1 = min(int(frac_subspace * eval_budget), remaining)
+            popsize1 = cma_popsize(d_sub)
+            iters1 = max(1, budget_stage1 // popsize1)
+
+            a0 = np.zeros(d_sub, dtype=float)
+            sigma0_sub = 1.0
+
+            es1 = CMAEvolutionStrategy(
+                a0,
+                sigma0_sub,
+                {
+                    "popsize": popsize1,
+                    "verb_disp": 0,
+                    "seed": seed + 1,
+                },
+            )
+
+            stage1_last_improve = best_so_far if np.isfinite(best_so_far) else -1e9
+            gens_since_improve = 0
+
+            for gen in tqdm(
+                range(iters1), desc=f"{tag}_stage1_subspace", leave=False
+            ):
+                A_ask = es1.ask()
+                Y = []
+                gen_best = -np.inf
+                gen_best_currents = None  # <-- literal for this generation
+
+                for a in A_ask:
+                    currents = m_vec + B_sub @ a
+                    currents = np.clip(currents, -RANGE, RANGE)
+                    y, x_used = eval_selectivity_grounded(
+                        currents, target_point, grid, rng_seed=seed
+                    )
+                    sel = -y
+                    Y.append(y)
+
+                    evals_so_far += 1
+
+                    # global best
+                    if sel > best_so_far:
+                        best_so_far = sel
+                        best_at_eval = evals_so_far
+                        best_currents = x_used.copy()
+
+                    # per-generation best (for logging)
+                    if sel > gen_best:
+                        gen_best = sel
+                        gen_best_currents = x_used.copy()
+
+                    if evals_so_far >= eval_budget:
+                        break
+
+                es1.tell(A_ask, Y)
+
+                xs_axis.append(evals_so_far)
+                step_vals.append(gen_best)
+                best_vals.append(best_so_far)
+
+                # log: currents = literal gen-best currents this generation
+                row = {
+                    "optimizer": "MS_HIER_CMA",
+                    "stage": 1,
+                    "subspace_dim": d_sub,
+                    "n_rows": n_rows,
+                    "n_per_row": n_per_row,
+                    "N": N,
+                    "repeat": repeat,
+                    "step_index": gen + 1,
+                    "evals_so_far": evals_so_far,
+                    "step_best_selectivity": gen_best,
+                    "best_so_far": best_so_far,
+                    "best_found_at_eval": best_at_eval,
+                    "target_x": target_point[0],
+                    "target_y": target_point[1],
+                    "target_z": target_point[2],
+                    "Currents": (
+                        gen_best_currents.tolist()
+                        if gen_best_currents is not None
+                        else None
+                    ),
+                }
+                log_step(csv_path, row, header_written)
+                header_written = True
+
+                # plateau check on global best
+                if best_so_far > stage1_last_improve + plateau_eps:
+                    stage1_last_improve = best_so_far
+                    gens_since_improve = 0
+                else:
+                    gens_since_improve += 1
+
+                if (
+                    gen + 1 >= min_gens
+                    and gens_since_improve >= stall_gens
+                ):
+                    break
+
+                if evals_so_far >= eval_budget:
+                    break
+
+    # --------------------------------------------------------------
+    # Stage 2: Full 12-D CMA-ES, warm-started
+    # --------------------------------------------------------------
+    remaining = eval_budget - evals_so_far
+    if remaining > 0:
+        popsize2 = cma_popsize(N)
+        iters2 = max(1, remaining // popsize2)
+
+        if not np.isfinite(best_so_far):
+            x0 = rng.uniform(-RANGE, RANGE, N)
+        else:
+            x0 = best_currents.copy()
+
+        sigma0_full = 0.6 * RANGE
+
+        es2 = CMAEvolutionStrategy(
+            x0,
+            sigma0_full,
+            {
+                "popsize": popsize2,
+                "verb_disp": 0,
+                "seed": seed + 2,
+                "bounds": [-RANGE, RANGE],
+            },
+        )
+
+        for gen in tqdm(
+            range(iters2), desc=f"{tag}_stage2_full", leave=False
+        ):
+            X_ask = es2.ask()
+            Y = []
+            gen_best = -np.inf
+            gen_best_currents = None
+
+            for x in X_ask:
+                x_c = np.clip(x, -RANGE, RANGE)
+                y, x_used = eval_selectivity_grounded(
+                    x_c, target_point, grid, rng_seed=seed
+                )
+                sel = -y
+                Y.append(y)
+
+                evals_so_far += 1
+
+                # global best
+                if sel > best_so_far:
+                    best_so_far = sel
+                    best_at_eval = evals_so_far
+                    best_currents = x_used.copy()
+
+                # per-generation best
+                if sel > gen_best:
+                    gen_best = sel
+                    gen_best_currents = x_used.copy()
+
+                if evals_so_far >= eval_budget:
+                    break
+
+            es2.tell(X_ask, Y)
+
+            xs_axis.append(evals_so_far)
+            step_vals.append(gen_best)
+            best_vals.append(best_so_far)
+
+            row = {
+                "optimizer": "MS_HIER_CMA",
+                "stage": 2,
+                "n_rows": n_rows,
+                "n_per_row": n_per_row,
+                "N": N,
+                "repeat": repeat,
+                "step_index": gen + 1,
+                "evals_so_far": evals_so_far,
+                "step_best_selectivity": gen_best,
+                "best_so_far": best_so_far,
+                "best_found_at_eval": best_at_eval,
+                "target_x": target_point[0],
+                "target_y": target_point[1],
+                "target_z": target_point[2],
+                "Currents": (
+                    gen_best_currents.tolist()
+                    if gen_best_currents is not None
+                    else None
+                ),
+            }
+            log_step(csv_path, row, header_written)
+            header_written = True
+
+            if evals_so_far >= eval_budget:
+                break
+
+    # One final plot over the *whole* run (all stages)
+    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+
+    return {
+        "optimizer": "MS_HIER_CMA",
+        "tag": tag,
+        "best": float(best_so_far),
+        "best_found_at_eval": int(best_at_eval),
+        "N": N,
+        "grid": grid,
+        "repeat": repeat,
+        "target_point": target_point,
+        "used_evals": evals_so_far,
+    }
+
+
 
 # ======================================================================
 # STATISTICAL ANALYSIS (key fix #7)
@@ -1015,6 +1618,9 @@ def pairwise_tests(df_summary):
     
     return pd.DataFrame(results)
 
+
+
+
 # ======================================================================
 # MAIN
 # ======================================================================
@@ -1051,15 +1657,10 @@ if __name__ == "__main__":
         print(f"\nN={N}, repeat={repeat+1}/{REPEATS}, target={tp}")
         print(f"  Budget: {budget} evaluations")
         
-        # -----------------------------
-        # Optimizers (commented = skip)
-        # -----------------------------
         
         # --- Random Search ---
         # summaries.append(run_random_search(grid, repeat, tp, budget))
         
-        # --- CMA-ES ---
-        # summaries.append(run_cma(grid, repeat, tp, budget))
         
         # --- Bayesian Optimization ---
         # summaries.append(run_bo(grid, repeat, tp, budget))
@@ -1068,13 +1669,16 @@ if __name__ == "__main__":
         # summaries.append(run_pso(grid, repeat, tp, budget))
         
         # --- Differential Evolution ---
-        summaries.append(run_de(grid, repeat, tp, budget))
+        #summaries.append(run_de(grid, repeat, tp, budget))
 
         # --- Cross-Entropy Method ---
-        summaries.append(run_cem(grid, repeat, tp, budget))
+        #summaries.append(run_cem(grid, repeat, tp, budget))
 
         # --- Simulated Annealing ---
-        summaries.append(run_sa(grid, repeat, tp, budget))
+        #summaries.append(run_sa(grid, repeat, tp, budget))
+        summaries.append(run_ms_hierarchical_cma(grid, repeat, tp, budget))
+        summaries.append(run_ms_pairs_sweep_then_cma(grid, repeat, tp, budget))
+        summaries.append(run_cma(grid, repeat, tp, budget))
     
     # ------------------------------------------------------------------
     # Save Raw Results
