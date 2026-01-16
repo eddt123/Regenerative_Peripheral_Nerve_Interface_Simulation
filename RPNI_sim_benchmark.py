@@ -1,21 +1,5 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-FIXED Fair Benchmark: CMA-ES vs BO vs PSO vs Random Search
-===========================================================
-Fixes:
-1. Dimension-scaled budgets (200*N evaluations per run)
-2. Sequential BO (not batch) with proper initialization
-3. Correct projection handling (tell original points to maintain model consistency)
-4. Dimension-scaled population sizes following standard recommendations
-5. Random search baseline
-6. 20 repeats for statistical power
-7. Statistical analysis with confidence intervals and significance tests
-8. Landscape characterization (sampling variance, local optima estimates)
-9. All algorithms get equal evaluation budgets
-
-Requires: cma, scikit-optimize, numpy, pandas, matplotlib, scipy, tqdm
-"""
 
 import os, time, math
 import numpy as np
@@ -97,13 +81,13 @@ EVALS_PER_DIM = 200      # 200*N evaluations per run
 REPEATS = 3             
 SEED_BASE = 42
 
-# CMA-ES: DIMENSION-SCALED population (key fix #4)
+# CMA-ES: DIMENSION-SCALED population
 CMA_SIGMA0 = 0.3e-3
 def cma_popsize(N):
     """Standard CMA-ES population size: 4 + floor(3*ln(N))"""
     return 4 + int(3 * np.log(N))
 
-# BO: SEQUENTIAL (key fix #2)
+# BO: SEQUENTIAL
 BO_ACQ = "EI"
 BO_KAPPA = 1.96  # ~95% confidence for LCB
 BO_XI = 0.01
@@ -208,10 +192,6 @@ def project_currents(x, lo=-RANGE, hi=RANGE, zero_sum=ZERO_SUM):
 # EVALUATION
 # ======================================================================
 def eval_selectivity(x, target_point, grid, rng_seed=None):
-    """
-    KEY FIX #3: Returns (NEGATIVE selectivity, original_x, projected_x).
-    This allows optimizers to be told the original point while evaluating projected.
-    """
     n_rows, n_per_row = grid
     x_orig = np.array(x, dtype=float)
     x_proj = project_currents(x_orig, -RANGE, RANGE, ZERO_SUM)
@@ -374,7 +354,7 @@ def run_pso_grounded(
     algo_seed = SEED_BASE + 3000 * repeat + 97 * N
     rng = np.random.default_rng(algo_seed)
 
-    tag = make_tag("PSO_GROUNDED", grid, repeat, target_point)
+    tag = make_tag("PSO", grid, repeat, target_point)
     csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
 
     popsize = pso_popsize(N)
@@ -434,7 +414,7 @@ def run_pso_grounded(
 
         r1 = rng.random(size=(popsize, N))
         r2 = rng.random(size=(popsize, N))
-        V = PSO_W * V + PSO_C1 * r1 * (pbest_pos - X) + PSO_C2 * r2 * (gbest_pos - X)
+        V = PSO_W * V + PSO_C1 * r1 * (pbest_pos - X) + PSO_C2 * r2 * (gbest_pos - X)  # main velocity equation
         if PSO_VCLAMP is not None:
             V = np.clip(V, -PSO_VCLAMP, PSO_VCLAMP)
 
@@ -550,7 +530,7 @@ def run_cma_grounded(
     header_written = False
     step_index = 0
 
-    # IMPORTANT: only run full CMA generations
+    # only run full CMA generations
     while (evals_so_far + popsize) <= eval_budget:
         step_index += 1
         X_ask = es.ask()
@@ -577,7 +557,7 @@ def run_cma_grounded(
                 best_at_eval = evals_so_far
                 best_currents = x_used.copy()
 
-        # tell() always receives popsize points now
+        
         es.tell(X_eval, Y)
 
         xs_axis.append(evals_so_far)
@@ -638,8 +618,6 @@ def run_pair_sweep_grounded(
     """
     Exhaustive sweep over ALL unordered electrode pairs (i < j)
     using dipolar pattern: +I0 at i, -I0 at j, others 0.
-
-    IMPORTANT: uses eval_seed for ALL objective evaluations (fairness).
     """
     n_rows, n_per_row = grid
     N = n_rows * n_per_row
@@ -743,7 +721,7 @@ def run_ms_sweep_then_pso_fair(
         grid, repeat, target_point, eval_budget,
         eval_seed=eval_seed,
         I0=I0,
-        tag_prefix="MS_SWEEP_PSO_FAIR",
+        tag_prefix="SWEEP_PSO",
         csv_path=csv_path,
         header_written=False,
         assert_within_budget=assert_sweep_within_budget,
@@ -752,7 +730,7 @@ def run_ms_sweep_then_pso_fair(
     if evals_so_far >= eval_budget or len(pair_results) == 0:
         save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
         return {
-            "optimizer": "MS_SWEEP_PSO_FAIR",
+            "optimizer": "SWEEP_PSO",
             "tag": tag,
             "best": float(best_so_far if np.isfinite(best_so_far) else 0.0),
             "best_found_at_eval": int(best_at_eval),
@@ -770,7 +748,7 @@ def run_ms_sweep_then_pso_fair(
     if remaining < popsize:
         save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
         return {
-            "optimizer": "MS_SWEEP_PSO_FAIR",
+            "optimizer": "SWEEP_PSO",
             "tag": tag,
             "best": float(best_so_far),
             "best_found_at_eval": int(best_at_eval),
@@ -799,7 +777,7 @@ def run_ms_sweep_then_pso_fair(
     pbest_pos = X.copy()
     pbest_val = np.empty(popsize, dtype=float)
 
-    # Iteration 0: evaluate whole swarm (FAIR: eval_seed)
+    # Iteration 0: evaluate whole swarm
     for i in range(popsize):
         y, x_used = eval_selectivity_grounded(pbest_pos[i], target_point, grid, rng_seed=eval_seed)
         pbest_val[i] = y
@@ -823,7 +801,7 @@ def run_ms_sweep_then_pso_fair(
     best_vals.append(best_so_far)
 
     log_step(csv_path, {
-        "optimizer": "MS_SWEEP_PSO_FAIR",
+        "optimizer": "SWEEP_PSO",
         "stage": 1,
         "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
         "popsize": popsize, "w": PSO_W, "c1": PSO_C1, "c2": PSO_C2,
@@ -884,7 +862,7 @@ def run_ms_sweep_then_pso_fair(
         best_vals.append(best_so_far)
 
         log_step(csv_path, {
-            "optimizer": "MS_SWEEP_PSO_FAIR",
+            "optimizer": "SWEEP_PSO",
             "stage": 1,
             "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
             "popsize": popsize, "w": PSO_W, "c1": PSO_C1, "c2": PSO_C2,
@@ -904,7 +882,7 @@ def run_ms_sweep_then_pso_fair(
     save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
 
     return {
-        "optimizer": "MS_SWEEP_PSO_FAIR",
+        "optimizer": "SWEEP_PSO",
         "tag": tag,
         "best": float(best_so_far),
         "best_found_at_eval": int(best_at_eval),
@@ -935,7 +913,7 @@ def run_ms_sweep_then_cma_fair(
     algo_seed = SEED_BASE + 7000 * repeat + 157 * N
     rng = np.random.default_rng(algo_seed)
 
-    tag = make_tag("MS_SWEEP_CMA_FAIR", grid, repeat, target_point)
+    tag = make_tag("SWEEP_CMA", grid, repeat, target_point)
     csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
 
     # Stage 0: exhaustive sweep (FAIR: eval_seed)
@@ -944,7 +922,7 @@ def run_ms_sweep_then_cma_fair(
         grid, repeat, target_point, eval_budget,
         eval_seed=eval_seed,
         I0=I0,
-        tag_prefix="MS_SWEEP_CMA_FAIR",
+        tag_prefix="SWEEP_CMA",
         csv_path=csv_path,
         header_written=False,
         assert_within_budget=assert_sweep_within_budget,
@@ -953,7 +931,7 @@ def run_ms_sweep_then_cma_fair(
     if evals_so_far >= eval_budget or len(pair_results) == 0:
         save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
         return {
-            "optimizer": "MS_SWEEP_CMA_FAIR",
+            "optimizer": "SWEEP_CMA",
             "tag": tag,
             "best": float(best_so_far if np.isfinite(best_so_far) else 0.0),
             "best_found_at_eval": int(best_at_eval),
@@ -980,7 +958,7 @@ def run_ms_sweep_then_cma_fair(
     if remaining < popsize:
         save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
         return {
-            "optimizer": "MS_SWEEP_CMA_FAIR",
+            "optimizer": "SWEEP_CMA",
             "tag": tag,
             "best": float(best_so_far),
             "best_found_at_eval": int(best_at_eval),
@@ -1039,7 +1017,7 @@ def run_ms_sweep_then_cma_fair(
         best_vals.append(best_so_far)
 
         log_step(csv_path, {
-            "optimizer": "MS_SWEEP_CMA_FAIR",
+            "optimizer": "SWEEP_CMA",
             "stage": 1,
             "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
             "repeat": repeat,
@@ -1061,7 +1039,7 @@ def run_ms_sweep_then_cma_fair(
     save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
 
     return {
-        "optimizer": "MS_SWEEP_CMA_FAIR",
+        "optimizer": "SWEEP_CMA",
         "tag": tag,
         "best": float(best_so_far),
         "best_found_at_eval": int(best_at_eval),
