@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 from itertools import product
 from tqdm import tqdm
 from scipy import stats
+from scipy.optimize import minimize
+
 
 # --- Simulator import ---
 try:
@@ -28,7 +30,7 @@ from skopt import Optimizer as SkOptimizer
 # ======================================================================
 # CONFIG
 # ======================================================================
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "benchmark_paper")
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "data", "benchmark_LBFGS")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Tissue / geometry
@@ -54,25 +56,12 @@ ZERO_SUM  = False         # no longer used as this is set in the opt functions
 
 # Targets (in metres)
 TARGET_POINTS = [
-    # --- Original 3 ---
+    # --- Paper points ---
     (0.0,    0.0,    0.0),      # centre of cylinder
     (0.002,  0.0035, 0.010),    # upper, off-centre (≈4.0 mm radially)
-    #(-0.003, -0.002, -0.015),   # lower, off-centre (≈3.6 mm radially)
-
-    # --- Mid-plane ring (z = 0), different quadrants & radii ---
-    (0.005,   0.0,    0.0),     # +x direction, 5 mm radius
-    #(0.0,    -0.005,  0.0),     # -y direction, 5 mm radius
-    #(-0.004,  0.004,  0.0),     # quadrant II, ≈5.7 mm radius
-    #(0.0035,  0.006,  0.0),     # quadrant I, ≈6.9 mm radius
-
-    # --- Upper half (z > 0), varied angles/radii ---
     (0.004,   0.002,  0.015),   # upper, ≈4.5 mm radius
-    #(0.0,     0.006,  0.012),   # upper, +y, 6 mm radius
-    #(-0.005,  0.0,    0.018),   # upper, -x, 5 mm radius
-
-    # --- Lower half (z < 0), varied angles/radii ---
-    #(0.0025, -0.0045, -0.012),  # lower, ≈5.1 mm radius
-    #(-0.006, -0.003,  -0.018),  # lower, ≈6.7 mm radius
+    (0.005, 0.000, 0.000)
+    
 ]
 
 
@@ -229,8 +218,10 @@ def eval_selectivity_grounded(x, target_point, grid, rng_seed=None):
         height=HEIGHT,
         sigma=SIGMA_T,
         n_off_samples=1200,
+        E_th=1, k=0.5,
         metric="activation",
         grounded_boundary=True,
+        use_activating_function = False, 
         R_outer=0.10,
         rng=(SEED_BASE if rng_seed is None else rng_seed),
     )
@@ -338,271 +329,6 @@ def characterize_landscape(grid, target_point, n_samples=200, seed=999):
 # ======================================================================
 # OPTIMISATION MODELS
 # ======================================================================
-
-
-# ---------------------------------------
-# Baseline PSO (grounded, no sweep)
-# ---------------------------------------
-def run_pso_grounded(
-    grid, repeat, target_point, eval_budget,
-    eval_seed: int,
-):
-    n_rows, n_per_row = grid
-    N = n_rows * n_per_row
-
-    # Optimizer randomness (separate from eval_seed)
-    algo_seed = SEED_BASE + 3000 * repeat + 97 * N
-    rng = np.random.default_rng(algo_seed)
-
-    tag = make_tag("PSO", grid, repeat, target_point)
-    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
-
-    popsize = pso_popsize(N)
-    iters = max(1, eval_budget // popsize)
-
-    # init swarm
-    X = np.clip(rng.uniform(-RANGE, RANGE, size=(popsize, N)), -RANGE, RANGE)
-    V = np.zeros_like(X)
-
-    # eval initial
-    pbest_pos = X.copy()
-    pbest_val = np.empty(popsize, dtype=float)
-
-    evals_so_far = 0
-    for i in range(popsize):
-        if evals_so_far >= eval_budget:
-            break
-        y, x_used = eval_selectivity_grounded(pbest_pos[i], target_point, grid, rng_seed=eval_seed)
-        evals_so_far += 1
-        pbest_val[i] = y
-        pbest_pos[i] = x_used
-        X[i] = x_used
-
-    g_idx = int(np.argmin(pbest_val[:max(1, min(popsize, evals_so_far))]))
-    gbest_pos = pbest_pos[g_idx].copy()
-    gbest_val = pbest_val[g_idx]
-
-    best_so_far = -gbest_val
-    best_at_eval = evals_so_far
-
-    xs_axis, step_vals, best_vals = [evals_so_far], [best_so_far], [best_so_far]
-    header_written = False
-
-    log_step(csv_path, {
-        "optimizer": "PSO_GROUNDED",
-        "stage": 1,
-        "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
-        "popsize": popsize, "w": PSO_W, "c1": PSO_C1, "c2": PSO_C2,
-        "repeat": repeat,
-        "step_index": 1,
-        "evals_so_far": evals_so_far,
-        "step_best_selectivity": best_so_far,
-        "best_so_far": best_so_far,
-        "best_found_at_eval": best_at_eval,
-        "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
-        "currents_gen_best": gbest_pos.tolist(),
-        "currents_best_so_far": gbest_pos.tolist(),
-        "eval_seed": eval_seed,
-        "algo_seed": algo_seed,
-    }, header_written)
-    header_written = True
-
-    # main loop
-    for it in tqdm(range(1, iters), desc=f"{tag}_pso", leave=False):
-        if evals_so_far >= eval_budget:
-            break
-
-        r1 = rng.random(size=(popsize, N))
-        r2 = rng.random(size=(popsize, N))
-        V = PSO_W * V + PSO_C1 * r1 * (pbest_pos - X) + PSO_C2 * r2 * (gbest_pos - X)  # main velocity equation
-        if PSO_VCLAMP is not None:
-            V = np.clip(V, -PSO_VCLAMP, PSO_VCLAMP)
-
-        X = np.clip(X + V, -RANGE, RANGE)
-
-        it_best_sel = -np.inf
-        it_best_curr = None
-
-        for i in range(popsize):
-            if evals_so_far >= eval_budget:
-                break
-
-            y, x_used = eval_selectivity_grounded(X[i], target_point, grid, rng_seed=eval_seed)
-            evals_so_far += 1
-            X[i] = x_used
-            sel = -y
-
-            if y < pbest_val[i]:
-                pbest_val[i] = y
-                pbest_pos[i] = x_used
-
-            if sel > it_best_sel:
-                it_best_sel = sel
-                it_best_curr = x_used.copy()
-
-            if sel > best_so_far:
-                best_so_far = sel
-                best_at_eval = evals_so_far
-                gbest_pos = x_used.copy()
-
-        # update global best from pbests (consistent PSO)
-        g_idx = int(np.argmin(pbest_val))
-        gbest_pos = pbest_pos[g_idx].copy()
-        gbest_val = pbest_val[g_idx]
-
-        xs_axis.append(evals_so_far)
-        step_vals.append(it_best_sel if np.isfinite(it_best_sel) else best_so_far)
-        best_vals.append(best_so_far)
-
-        log_step(csv_path, {
-            "optimizer": "PSO_GROUNDED",
-            "stage": 1,
-            "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
-            "popsize": popsize, "w": PSO_W, "c1": PSO_C1, "c2": PSO_C2,
-            "repeat": repeat,
-            "step_index": it + 1,
-            "evals_so_far": evals_so_far,
-            "step_best_selectivity": (it_best_sel if np.isfinite(it_best_sel) else best_so_far),
-            "best_so_far": best_so_far,
-            "best_found_at_eval": best_at_eval,
-            "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
-            "currents_gen_best": (it_best_curr.tolist() if it_best_curr is not None else None),
-            "currents_best_so_far": gbest_pos.tolist(),
-            "eval_seed": eval_seed,
-            "algo_seed": algo_seed,
-        }, header_written)
-
-    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
-
-    return {
-        "optimizer": "PSO_GROUNDED",
-        "tag": tag,
-        "best": float(best_so_far),
-        "best_found_at_eval": int(best_at_eval),
-        "N": N, "grid": grid, "repeat": repeat,
-        "target_point": target_point,
-        "used_evals": int(evals_so_far),
-        "popsize": int(popsize),
-        "eval_seed": int(eval_seed),
-        "algo_seed": int(algo_seed),
-    }
-
-
-
-# ---------------------------------------
-# Baseline CMA-ES (grounded, no sweep)
-# ---------------------------------------
-def run_cma_grounded(
-    grid, repeat, target_point, eval_budget,
-    eval_seed: int,
-    sigma0: float = CMA_SIGMA0,
-):
-    n_rows, n_per_row = grid
-    N = n_rows * n_per_row
-
-    # Optimizer randomness (separate from eval_seed)
-    algo_seed = SEED_BASE + 1000 * repeat + 131 * N
-    rng = np.random.default_rng(algo_seed)
-
-    tag = make_tag("CMA_GROUNDED", grid, repeat, target_point)
-    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
-
-    popsize = max(4, cma_popsize(N))  # safety floor
-
-    x0 = rng.uniform(-RANGE, RANGE, size=N)
-    es = CMAEvolutionStrategy(
-        x0, sigma0,
-        {
-            "popsize": popsize,
-            "verb_disp": 0,
-            "seed": algo_seed,
-            "bounds": [-RANGE, RANGE],
-            "CMA_mirrors": 0,  # optional robustness
-        }
-    )
-
-    evals_so_far = 0
-    best_so_far = -np.inf
-    best_at_eval = 0
-    best_currents = None
-
-    xs_axis, step_vals, best_vals = [], [], []
-    header_written = False
-    step_index = 0
-
-    # only run full CMA generations
-    while (evals_so_far + popsize) <= eval_budget:
-        step_index += 1
-        X_ask = es.ask()
-
-        X_eval, Y = [], []
-        gen_best = -np.inf
-        gen_best_curr = None
-
-        for x in X_ask:
-            x = np.clip(np.asarray(x, float), -RANGE, RANGE)
-            y, x_used = eval_selectivity_grounded(x, target_point, grid, rng_seed=eval_seed)
-            evals_so_far += 1
-
-            X_eval.append(x_used)
-            Y.append(y)
-
-            sel = -y
-            if sel > gen_best:
-                gen_best = sel
-                gen_best_curr = x_used.copy()
-
-            if sel > best_so_far:
-                best_so_far = sel
-                best_at_eval = evals_so_far
-                best_currents = x_used.copy()
-
-        
-        es.tell(X_eval, Y)
-
-        xs_axis.append(evals_so_far)
-        step_vals.append(gen_best if np.isfinite(gen_best) else best_so_far)
-        best_vals.append(best_so_far)
-
-        log_step(csv_path, {
-            "optimizer": "CMA_GROUNDED",
-            "stage": 1,
-            "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
-            "sigma0": sigma0, "popsize": popsize,
-            "repeat": repeat,
-            "step_index": step_index,
-            "evals_so_far": evals_so_far,
-            "step_best_selectivity": (gen_best if np.isfinite(gen_best) else best_so_far),
-            "best_so_far": best_so_far,
-            "best_found_at_eval": best_at_eval,
-            "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
-            "currents_gen_best": (gen_best_curr.tolist() if gen_best_curr is not None else None),
-            "currents_best_so_far": (best_currents.tolist() if best_currents is not None else None),
-            "eval_seed": eval_seed,
-            "algo_seed": algo_seed,
-        }, header_written)
-        header_written = True
-
-    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
-
-    return {
-        "optimizer": "CMA_GROUNDED",
-        "tag": tag,
-        "best": float(best_so_far if np.isfinite(best_so_far) else 0.0),
-        "best_found_at_eval": int(best_at_eval),
-        "N": N, "grid": grid, "repeat": repeat,
-        "target_point": target_point,
-        "used_evals": int(evals_so_far),
-        "popsize": int(popsize),
-        "eval_seed": int(eval_seed),
-        "algo_seed": int(algo_seed),
-    }
-
-
-
-# -------------------------------------------------------
-# Fair MS: sweep -> PSO (same sweep fraction as CMA)
-# -------------------------------------------------------
 # -----------------------------
 # Helper: EXHAUSTIVE pair-sweep stage (grounded, no zero-sum)
 # -----------------------------
@@ -686,362 +412,112 @@ def run_pair_sweep_grounded(
 
     return (pair_results, evals_so_far, best_so_far, best_at_eval, best_currents,
             xs_axis, step_vals, best_vals, header_written)
+# ======================================================================
+# L-BFGS-B (grounded, no sweep) + (sweep -> L-BFGS-B)
+# ======================================================================
+
+class _BudgetExhausted(RuntimeError):
+    pass
 
 
-
-# -------------------------------------------------------
-# Fair MS: EXHAUSTIVE sweep -> PSO
-# -------------------------------------------------------
-def run_ms_sweep_then_pso_fair(
+def run_lbfgs_grounded(
     grid, repeat, target_point, eval_budget,
     eval_seed: int,
-    I0=0.8e-3,
-    top_k_pairs=3,
-    assert_sweep_within_budget=True,
+    ftol: float = 1e-9,
+    gtol: float = 1e-6,
+    maxls: int = 20,
 ):
     """
-    Stage 0: exhaustive pair sweep over ALL unordered pairs (i<j), +/-I0.
-    Stage 1: PSO warm-started with top-K pair patterns as initial particles,
-             remainder random.
-    FAIRNESS: ALL objective evals use eval_seed.
+    Baseline L-BFGS-B on grounded objective with box bounds [-RANGE, RANGE].
+    Logs *each objective evaluation* as a step (step_index == evals_so_far),
+    so progress plots and CSVs look like the other optimizers.
     """
     n_rows, n_per_row = grid
     N = n_rows * n_per_row
 
-    # Optimizer randomness only
-    algo_seed = SEED_BASE + 9100 * repeat + 97 * N
+    algo_seed = SEED_BASE + 5000 * repeat + 199 * N
     rng = np.random.default_rng(algo_seed)
 
-    tag = make_tag("MS_SWEEP_PSO_FAIR", grid, repeat, target_point)
+    tag = make_tag("LBFGS", grid, repeat, target_point)
     csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
 
-    # Stage 0: exhaustive sweep (FAIR: eval_seed)
-    (pair_results, evals_so_far, best_so_far, best_at_eval, best_currents,
-     xs_axis, step_vals, best_vals, header_written) = run_pair_sweep_grounded(
-        grid, repeat, target_point, eval_budget,
-        eval_seed=eval_seed,
-        I0=I0,
-        tag_prefix="SWEEP_PSO",
-        csv_path=csv_path,
-        header_written=False,
-        assert_within_budget=assert_sweep_within_budget,
-    )
+    x0 = rng.uniform(-RANGE, RANGE, size=N)
+    bounds = [(-RANGE, RANGE)] * N
 
-    if evals_so_far >= eval_budget or len(pair_results) == 0:
-        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
-        return {
-            "optimizer": "SWEEP_PSO",
-            "tag": tag,
-            "best": float(best_so_far if np.isfinite(best_so_far) else 0.0),
-            "best_found_at_eval": int(best_at_eval),
-            "N": N, "grid": grid, "repeat": repeat,
-            "target_point": target_point,
-            "used_evals": int(evals_so_far),
-            "eval_seed": int(eval_seed),
-            "algo_seed": int(algo_seed),
-        }
+    evals_so_far = 0
+    best_so_far = -np.inf
+    best_at_eval = 0
+    best_currents = None
 
-    remaining = eval_budget - evals_so_far
-    popsize = pso_popsize(N)
+    xs_axis, step_vals, best_vals = [], [], []
+    header_written = False
 
-    # Need at least one full swarm evaluation to be consistent & simple
-    if remaining < popsize:
-        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
-        return {
-            "optimizer": "SWEEP_PSO",
-            "tag": tag,
-            "best": float(best_so_far),
-            "best_found_at_eval": int(best_at_eval),
-            "N": N, "grid": grid, "repeat": repeat,
-            "target_point": target_point,
-            "used_evals": int(evals_so_far),
-            "eval_seed": int(eval_seed),
-            "algo_seed": int(algo_seed),
-        }
+    def fun(x):
+        nonlocal evals_so_far, best_so_far, best_at_eval, best_currents, header_written
 
-    # Full swarm iterations only (ignore leftover < popsize)
-    iters = remaining // popsize
+        if evals_so_far >= eval_budget:
+            raise _BudgetExhausted()
 
-    # Warm-start: top-K pair vectors
-    pair_results.sort(key=lambda t: t[0], reverse=True)
-    K = min(top_k_pairs, popsize, len(pair_results))
+        y, x_used = eval_selectivity_grounded(x, target_point, grid, rng_seed=eval_seed)
+        evals_so_far += 1
+        sel = -y
 
-    X = np.zeros((popsize, N), dtype=float)
-    for k in range(K):
-        X[k] = np.clip(pair_results[k][1], -RANGE, RANGE)
-    for i in range(K, popsize):
-        X[i] = rng.uniform(-RANGE, RANGE, N)
-    X = np.clip(X, -RANGE, RANGE)
-
-    V = np.zeros_like(X)
-    pbest_pos = X.copy()
-    pbest_val = np.empty(popsize, dtype=float)
-
-    # Iteration 0: evaluate whole swarm
-    for i in range(popsize):
-        y, x_used = eval_selectivity_grounded(pbest_pos[i], target_point, grid, rng_seed=eval_seed)
-        pbest_val[i] = y
-        pbest_pos[i] = x_used
-        X[i] = x_used
-
-    evals_so_far += popsize
-
-    g_idx = int(np.argmin(pbest_val))
-    gbest_pos = pbest_pos[g_idx].copy()
-    gbest_val = pbest_val[g_idx]
-
-    swarm_best = -gbest_val
-    if swarm_best > best_so_far:
-        best_so_far = swarm_best
-        best_at_eval = evals_so_far
-        best_currents = gbest_pos.copy()
-
-    xs_axis.append(evals_so_far)
-    step_vals.append(swarm_best)
-    best_vals.append(best_so_far)
-
-    log_step(csv_path, {
-        "optimizer": "SWEEP_PSO",
-        "stage": 1,
-        "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
-        "popsize": popsize, "w": PSO_W, "c1": PSO_C1, "c2": PSO_C2,
-        "repeat": repeat,
-        "step_index": 1,
-        "evals_so_far": evals_so_far,
-        "step_best_selectivity": swarm_best,
-        "best_so_far": best_so_far,
-        "best_found_at_eval": best_at_eval,
-        "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
-        "I0": I0, "top_k_pairs": top_k_pairs,
-        "currents": best_currents.tolist(),
-        "eval_seed": eval_seed,
-        "algo_seed": algo_seed,
-    }, header_written)
-    header_written = True
-
-    # Remaining full iterations
-    for it in tqdm(range(1, iters), desc=f"{tag}_stage1_pso", leave=False):
-        # velocity + position update
-        r1 = rng.random(size=(popsize, N))
-        r2 = rng.random(size=(popsize, N))
-        V = PSO_W * V + PSO_C1 * r1 * (pbest_pos - X) + PSO_C2 * r2 * (gbest_pos - X)
-        if PSO_VCLAMP is not None:
-            V = np.clip(V, -PSO_VCLAMP, PSO_VCLAMP)
-
-        X = np.clip(X + V, -RANGE, RANGE)
-
-        it_best_sel = -np.inf
-        it_best_curr = None
-
-        # evaluate full swarm (FAIR: eval_seed)
-        for i in range(popsize):
-            y, x_used = eval_selectivity_grounded(X[i], target_point, grid, rng_seed=eval_seed)
-            X[i] = x_used
-            evals_so_far += 1
-            sel = -y
-
-            if y < pbest_val[i]:
-                pbest_val[i] = y
-                pbest_pos[i] = x_used
-
-            if sel > it_best_sel:
-                it_best_sel = sel
-                it_best_curr = x_used.copy()
-
-            if sel > best_so_far:
-                best_so_far = sel
-                best_at_eval = evals_so_far
-                best_currents = x_used.copy()
-
-        g_idx = int(np.argmin(pbest_val))
-        gbest_pos = pbest_pos[g_idx].copy()
-        gbest_val = pbest_val[g_idx]
+        if sel > best_so_far:
+            best_so_far = sel
+            best_at_eval = evals_so_far
+            best_currents = x_used.copy()
 
         xs_axis.append(evals_so_far)
-        step_vals.append(it_best_sel if np.isfinite(it_best_sel) else best_so_far)
+        step_vals.append(sel)
         best_vals.append(best_so_far)
 
         log_step(csv_path, {
-            "optimizer": "SWEEP_PSO",
-            "stage": 1,
-            "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
-            "popsize": popsize, "w": PSO_W, "c1": PSO_C1, "c2": PSO_C2,
-            "repeat": repeat,
-            "step_index": it + 1,
-            "evals_so_far": evals_so_far,
-            "step_best_selectivity": (it_best_sel if np.isfinite(it_best_sel) else best_so_far),
-            "best_so_far": best_so_far,
-            "best_found_at_eval": best_at_eval,
-            "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
-            "I0": I0, "top_k_pairs": top_k_pairs,
-            "currents": (it_best_curr.tolist() if it_best_curr is not None else None),
-            "eval_seed": eval_seed,
-            "algo_seed": algo_seed,
-        }, header_written)
-
-    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
-
-    return {
-        "optimizer": "SWEEP_PSO",
-        "tag": tag,
-        "best": float(best_so_far),
-        "best_found_at_eval": int(best_at_eval),
-        "N": N, "grid": grid, "repeat": repeat,
-        "target_point": target_point,
-        "used_evals": int(evals_so_far),
-        "popsize": int(popsize),
-        "eval_seed": int(eval_seed),
-        "algo_seed": int(algo_seed),
-    }
-
-
-
-# -------------------------------------------------------
-# Fair MS: EXHAUSTIVE sweep -> CMA
-# -------------------------------------------------------
-def run_ms_sweep_then_cma_fair(
-    grid, repeat, target_point, eval_budget,
-    eval_seed: int,
-    I0=0.8e-3,
-    top_k_pairs=3,
-    assert_sweep_within_budget=True,
-):
-    n_rows, n_per_row = grid
-    N = n_rows * n_per_row
-
-    # Optimizer randomness only
-    algo_seed = SEED_BASE + 7000 * repeat + 157 * N
-    rng = np.random.default_rng(algo_seed)
-
-    tag = make_tag("SWEEP_CMA", grid, repeat, target_point)
-    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
-
-    # Stage 0: exhaustive sweep (FAIR: eval_seed)
-    (pair_results, evals_so_far, best_so_far, best_at_eval, best_currents,
-     xs_axis, step_vals, best_vals, header_written) = run_pair_sweep_grounded(
-        grid, repeat, target_point, eval_budget,
-        eval_seed=eval_seed,
-        I0=I0,
-        tag_prefix="SWEEP_CMA",
-        csv_path=csv_path,
-        header_written=False,
-        assert_within_budget=assert_sweep_within_budget,
-    )
-
-    if evals_so_far >= eval_budget or len(pair_results) == 0:
-        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
-        return {
-            "optimizer": "SWEEP_CMA",
-            "tag": tag,
-            "best": float(best_so_far if np.isfinite(best_so_far) else 0.0),
-            "best_found_at_eval": int(best_at_eval),
-            "N": N, "grid": grid, "repeat": repeat,
-            "target_point": target_point,
-            "used_evals": int(evals_so_far),
-            "eval_seed": int(eval_seed),
-            "algo_seed": int(algo_seed),
-        }
-
-    # Warm-start from top-K
-    pair_results.sort(key=lambda t: t[0], reverse=True)
-    k = min(top_k_pairs, len(pair_results))
-    X_top = np.stack([c for (_, c) in pair_results[:k]], axis=0)
-
-    x0 = np.clip(np.mean(X_top, axis=0), -RANGE, RANGE)
-    sigma_est = np.std(X_top, axis=0).mean() if k > 1 else 0.3 * RANGE
-    sigma0 = max(1e-6, min(0.5 * RANGE, max(0.1 * RANGE, sigma_est)))
-
-    popsize = max(4, cma_popsize(N))  # safety floor
-
-    remaining = eval_budget - evals_so_far
-    # Need at least one full CMA generation to avoid partial tell()
-    if remaining < popsize:
-        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
-        return {
-            "optimizer": "SWEEP_CMA",
-            "tag": tag,
-            "best": float(best_so_far),
-            "best_found_at_eval": int(best_at_eval),
-            "N": N, "grid": grid, "repeat": repeat,
-            "target_point": target_point,
-            "used_evals": int(evals_so_far),
-            "eval_seed": int(eval_seed),
-            "algo_seed": int(algo_seed),
-        }
-
-    es = CMAEvolutionStrategy(
-        x0, sigma0,
-        {
-            "popsize": popsize,
-            "verb_disp": 0,
-            "seed": algo_seed + 1,
-            "bounds": [-RANGE, RANGE],
-            "CMA_mirrors": 0,  # optional robustness
-        }
-    )
-
-    step_index = 0
-    # IMPORTANT: only run full CMA generations
-    while (evals_so_far + popsize) <= eval_budget:
-        step_index += 1
-        X_ask = es.ask()
-
-        X_eval, Y = [], []
-        gen_best = -np.inf
-        gen_best_curr = None
-
-        for x in X_ask:
-            x = np.clip(np.asarray(x, float), -RANGE, RANGE)
-
-            # FAIR: same eval_seed as sweep
-            y, x_used = eval_selectivity_grounded(x, target_point, grid, rng_seed=eval_seed)
-            evals_so_far += 1
-
-            X_eval.append(x_used)
-            Y.append(y)
-
-            sel = -y
-            if sel > gen_best:
-                gen_best = sel
-                gen_best_curr = x_used.copy()
-
-            if sel > best_so_far:
-                best_so_far = sel
-                best_at_eval = evals_so_far
-                best_currents = x_used.copy()
-
-        es.tell(X_eval, Y)
-
-        xs_axis.append(evals_so_far)
-        step_vals.append(gen_best if np.isfinite(gen_best) else best_so_far)
-        best_vals.append(best_so_far)
-
-        log_step(csv_path, {
-            "optimizer": "SWEEP_CMA",
+            "optimizer": "LBFGS",
             "stage": 1,
             "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
             "repeat": repeat,
-            "step_index": step_index,
+            "step_index": evals_so_far,
             "evals_so_far": evals_so_far,
-            "step_best_selectivity": (gen_best if np.isfinite(gen_best) else best_so_far),
+            "step_best_selectivity": sel,
             "best_so_far": best_so_far,
             "best_found_at_eval": best_at_eval,
             "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
-            "I0": I0, "top_k_pairs": top_k_pairs,
-            "sigma0": sigma0, "popsize": popsize,
-            "currents_gen_best": (gen_best_curr.tolist() if gen_best_curr is not None else None),
+            "currents_gen_best": x_used.tolist(),
             "currents_best_so_far": (best_currents.tolist() if best_currents is not None else None),
             "eval_seed": eval_seed,
             "algo_seed": algo_seed,
+            "method": "L-BFGS-B",
+            "ftol": ftol,
+            "gtol": gtol,
+            "maxls": maxls,
         }, header_written)
         header_written = True
+
+        return float(y)  # minimizer expects negative selectivity
+
+    try:
+        minimize(
+            fun,
+            x0=x0,
+            method="L-BFGS-B",
+            bounds=bounds,
+            options={
+                "maxfun": int(eval_budget),          # counts objective calls (incl. finite-diff calls)
+                "maxiter": int(max(1, eval_budget)), # safety
+                "ftol": ftol,
+                "gtol": gtol,
+                "maxls": int(maxls),
+            },
+        )
+    except _BudgetExhausted:
+        pass
 
     save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
 
     return {
-        "optimizer": "SWEEP_CMA",
+        "optimizer": "LBFGS",
         "tag": tag,
-        "best": float(best_so_far),
+        "best": float(best_so_far if np.isfinite(best_so_far) else 0.0),
         "best_found_at_eval": int(best_at_eval),
         "N": N, "grid": grid, "repeat": repeat,
         "target_point": target_point,
@@ -1049,6 +525,157 @@ def run_ms_sweep_then_cma_fair(
         "eval_seed": int(eval_seed),
         "algo_seed": int(algo_seed),
     }
+
+
+def run_ms_sweep_then_lbfgs_fair(
+    grid, repeat, target_point, eval_budget,
+    eval_seed: int,
+    I0=0.8e-3,
+    top_k_pairs=20,
+    assert_sweep_within_budget=True,
+    ftol: float = 1e-9,
+    gtol: float = 1e-6,
+    maxls: int = 20,
+):
+    """
+    Stage 0: exhaustive pair sweep (fair: eval_seed)
+    Stage 1: L-BFGS-B warm-started from mean(top-K sweep patterns) (fair: eval_seed)
+    Uses same CSV format as your other MS runs.
+    """
+    n_rows, n_per_row = grid
+    N = n_rows * n_per_row
+
+    algo_seed = SEED_BASE + 8000 * repeat + 223 * N
+    rng = np.random.default_rng(algo_seed)
+
+    tag = make_tag("SWEEP_LBFGS", grid, repeat, target_point)
+    csv_path = os.path.join(OUTPUT_DIR, f"{tag}.csv")
+
+    # ---- Stage 0: sweep ----
+    (pair_results, evals_so_far, best_so_far, best_at_eval, best_currents,
+     xs_axis, step_vals, best_vals, header_written) = run_pair_sweep_grounded(
+        grid, repeat, target_point, eval_budget,
+        eval_seed=eval_seed,
+        I0=I0,
+        tag_prefix="SWEEP_LBFGS",
+        csv_path=csv_path,
+        header_written=False,
+        assert_within_budget=assert_sweep_within_budget,
+    )
+
+    if evals_so_far >= eval_budget or len(pair_results) == 0:
+        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+        return {
+            "optimizer": "SWEEP_LBFGS",
+            "tag": tag,
+            "best": float(best_so_far if np.isfinite(best_so_far) else 0.0),
+            "best_found_at_eval": int(best_at_eval),
+            "N": N, "grid": grid, "repeat": repeat,
+            "target_point": target_point,
+            "used_evals": int(evals_so_far),
+            "eval_seed": int(eval_seed),
+            "algo_seed": int(algo_seed),
+        }
+
+    remaining = eval_budget - evals_so_far
+    if remaining <= 0:
+        save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+        return {
+            "optimizer": "SWEEP_LBFGS",
+            "tag": tag,
+            "best": float(best_so_far),
+            "best_found_at_eval": int(best_at_eval),
+            "N": N, "grid": grid, "repeat": repeat,
+            "target_point": target_point,
+            "used_evals": int(evals_so_far),
+            "eval_seed": int(eval_seed),
+            "algo_seed": int(algo_seed),
+        }
+
+    # Warm-start x0 from top-K sweep patterns (like your SWEEP_CMA approach)
+    pair_results.sort(key=lambda t: t[0], reverse=True)
+    K = min(int(top_k_pairs), len(pair_results))
+    X_top = np.stack([c for (_, c) in pair_results[:K]], axis=0)
+    x0 = np.clip(np.mean(X_top, axis=0), -RANGE, RANGE)
+
+    bounds = [(-RANGE, RANGE)] * N
+
+    def fun(x):
+        nonlocal evals_so_far, best_so_far, best_at_eval, best_currents, header_written
+
+        if evals_so_far >= eval_budget:
+            raise _BudgetExhausted()
+
+        y, x_used = eval_selectivity_grounded(x, target_point, grid, rng_seed=eval_seed)
+        evals_so_far += 1
+        sel = -y
+
+        if sel > best_so_far:
+            best_so_far = sel
+            best_at_eval = evals_so_far
+            best_currents = x_used.copy()
+
+        xs_axis.append(evals_so_far)
+        step_vals.append(sel)
+        best_vals.append(best_so_far)
+
+        log_step(csv_path, {
+            "optimizer": "SWEEP_LBFGS",
+            "stage": 1,
+            "n_rows": n_rows, "n_per_row": n_per_row, "N": N,
+            "repeat": repeat,
+            "step_index": evals_so_far,
+            "evals_so_far": evals_so_far,
+            "step_best_selectivity": sel,
+            "best_so_far": best_so_far,
+            "best_found_at_eval": best_at_eval,
+            "target_x": target_point[0], "target_y": target_point[1], "target_z": target_point[2],
+            "I0": I0, "top_k_pairs": top_k_pairs,
+            "currents_gen_best": x_used.tolist(),
+            "currents_best_so_far": (best_currents.tolist() if best_currents is not None else None),
+            "eval_seed": eval_seed,
+            "algo_seed": algo_seed,
+            "method": "L-BFGS-B",
+            "ftol": ftol,
+            "gtol": gtol,
+            "maxls": maxls,
+        }, header_written)
+        header_written = True
+
+        return float(y)
+
+    try:
+        minimize(
+            fun,
+            x0=x0,
+            method="L-BFGS-B",
+            bounds=bounds,
+            options={
+                "maxfun": int(remaining),
+                "maxiter": int(max(1, remaining)),
+                "ftol": ftol,
+                "gtol": gtol,
+                "maxls": int(maxls),
+            },
+        )
+    except _BudgetExhausted:
+        pass
+
+    save_progress_plot(xs_axis, step_vals, best_vals, tag, target_point)
+
+    return {
+        "optimizer": "SWEEP_LBFGS",
+        "tag": tag,
+        "best": float(best_so_far if np.isfinite(best_so_far) else 0.0),
+        "best_found_at_eval": int(best_at_eval),
+        "N": N, "grid": grid, "repeat": repeat,
+        "target_point": target_point,
+        "used_evals": int(evals_so_far),
+        "eval_seed": int(eval_seed),
+        "algo_seed": int(algo_seed),
+    }
+
+
 
 
 
@@ -1241,15 +868,15 @@ if __name__ == "__main__":
                 budget = EVALS_PER_DIM * N
                 eval_seed = SEED_BASE + 1_000_000*repeat + 10_000*N + t_idx
 
-                summaries.append(run_ms_sweep_then_cma_fair(grid, repeat, tp, budget, eval_seed=eval_seed))
-                summaries.append(run_ms_sweep_then_pso_fair(grid, repeat, tp, budget, eval_seed=eval_seed))
-                summaries.append(run_pso_grounded(grid, repeat, tp, budget, eval_seed=eval_seed))
-                summaries.append(run_cma_grounded(grid, repeat, tp, budget, eval_seed=eval_seed))
-                
+                #summaries.append(run_ms_sweep_then_cma_fair(grid, repeat, tp, budget, eval_seed=eval_seed))
+                #summaries.append(run_ms_sweep_then_pso_fair(grid, repeat, tp, budget, eval_seed=eval_seed))
+                #summaries.append(run_pso_grounded(grid, repeat, tp, budget, eval_seed=eval_seed))
+                #summaries.append(run_cma_grounded(grid, repeat, tp, budget, eval_seed=eval_seed))
+                summaries.append(run_lbfgs_grounded(grid, repeat, tp, budget, eval_seed=eval_seed))
 
-
-
-
+                summaries.append(run_ms_sweep_then_lbfgs_fair(grid, repeat, tp, budget, eval_seed=eval_seed,
+                                             I0=0.8e-3, top_k_pairs=20,
+                                             assert_sweep_within_budget=True))
 
 
     
@@ -1351,10 +978,8 @@ if __name__ == "__main__":
                     std_curve = np.std(interpolated, axis=0)
                                         
                     color_map = {
-                        "PSO_GROUNDED": "red",
-                        "CMA_GROUNDED": "blue",
-                        "MS_SWEEP_PSO_FAIR": "orange",
-                        "MS_SWEEP_CMA_FAIR": "green",
+                        "LBFGS": "red",
+                        "SWEEP_LBFGS": "blue",
                     }
 
                     

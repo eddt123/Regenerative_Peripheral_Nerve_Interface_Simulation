@@ -78,7 +78,7 @@ def sample_points_in_cylinder(n_points, radius, z0, z1, exclude_center=None, exc
     return np.array(pts)
 
 # ---------- Activation model ----------
-def compute_activating_function(r, sources_pos, currents, sigma, electrode_radius=0.001, delta=1e-5):
+def compute_activating_function(r, sources_pos, currents, sigma, electrode_radius=0.001, delta=1e-4):
     r_plus = np.array(r); r_minus = np.array(r)
     r_plus[2] += delta;   r_minus[2] -= delta
     Vp = potential_at_point(r_plus,  sources_pos, currents, sigma, electrode_radius)
