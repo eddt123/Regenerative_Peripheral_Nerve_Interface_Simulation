@@ -6,6 +6,7 @@
 - ✅ You MAY read and write: `data/automated/`
 - ❌ Do NOT touch any other files
 - ❌ Do NOT modify any other scripts
+Only read and write files within this project directory.
 
 
 ## Your Role
